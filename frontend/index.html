@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Here I Am</title>
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <h1>Here I Am</h1>
+        <p>Personal voice archive, local transcript pipeline, metadata analysis, and RAG chat.</p>
+      </header>
+
+      <section class="panel" id="panel-ollama">
+        <h2>1. Local LLM Control</h2>
+        <div class="button-row">
+          <button id="btn-check-ollama">Check Status</button>
+          <button id="btn-start-ollama" class="green">Start LLM</button>
+          <button id="btn-stop-ollama" class="red">Stop LLM</button>
+        </div>
+        <pre id="ollama-status" class="status-box">Idle</pre>
+      </section>
+
+      <section class="panel" id="panel-record">
+        <h2>2. Learning Mode</h2>
+        <div class="button-row">
+          <button id="btn-record-start" class="green">Record</button>
+          <button id="btn-record-pause" class="yellow">Pause Recording</button>
+          <button id="btn-record-stop" class="red">Stop Recording</button>
+        </div>
+        <div class="detail-grid">
+          <div><strong>Current Session</strong><div id="record-session">None</div></div>
+          <div><strong>Recording State</strong><div id="record-state">Idle</div></div>
+        </div>
+        <div class="meter"><div id="record-meter"></div></div>
+        <pre id="record-log" class="status-box">Ready</pre>
+      </section>
+
+      <section class="panel" id="panel-transcribe">
+        <h2>3. Transcribing Mode</h2>
+        <div class="button-row">
+          <button id="btn-refresh-transcribe">Refresh Queue</button>
+          <button id="btn-start-transcribe" class="green">Generate Transcripts</button>
+        </div>
+        <div class="detail-grid">
+          <div><strong>Pending Recordings</strong><div id="transcribe-count">0</div></div>
+          <div><strong>Current File</strong><div id="transcribe-file">None</div></div>
+        </div>
+        <div class="meter"><div id="transcribe-meter"></div></div>
+        <pre id="transcribe-log" class="status-box">Waiting</pre>
+      </section>
+
+      <section class="panel" id="panel-analysis">
+        <h2>4. Analysis Mode</h2>
+        <div class="button-row">
+          <button id="btn-refresh-analysis">Refresh Queue</button>
+          <button id="btn-start-analysis" class="green">Analyze Transcripts</button>
+        </div>
+        <div class="detail-grid">
+          <div><strong>Pending Transcripts</strong><div id="analysis-count">0</div></div>
+          <div><strong>Current File</strong><div id="analysis-file">None</div></div>
+        </div>
+        <div class="meter"><div id="analysis-meter"></div></div>
+        <pre id="analysis-log" class="status-box">Waiting</pre>
+      </section>
+
+      <section class="panel" id="panel-chat">
+        <h2>5. Here I Am</h2>
+        <textarea id="chat-question" rows="4" placeholder="Ask about your stories, views, memories, and interests."></textarea>
+        <div class="button-row">
+          <button id="btn-chat-ask" class="green">Ask</button>
+        </div>
+        <pre id="chat-answer" class="status-box large">Awaiting a question.</pre>
+      </section>
+    </main>
+
+    <script src="assets/app.js"></script>
+  </body>
+</html>

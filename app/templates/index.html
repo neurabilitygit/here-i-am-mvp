@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Here I Am</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Here I Am</h1>
+    <p class="subhead">A local autobiography capture, analysis, and RAG system</p>
+
+    <section class="panel">
+      <h2>1. Local LLM Control</h2>
+      <div class="row">
+        <button id="ollama-start" class="green">Start LLM (disabled)</button>
+        <button id="ollama-stop" class="red">Shut Down LLM (disabled)</button>
+        <button id="ollama-refresh">Refresh Status</button>
+      </div>
+      <div id="ollama-status" class="status-box">Checking Ollama status…</div>
+    </section>
+
+    <section class="panel">
+      <h2>2. Learning Mode</h2>
+      <div class="row">
+        <button id="record-start" class="green">Record</button>
+        <button id="record-pause" class="yellow" disabled>Pause Recording</button>
+        <button id="record-stop" class="red" disabled>Stop Recording</button>
+      </div>
+      <div class="field-group">
+        <label for="record-title">Optional title</label>
+        <input id="record-title" type="text" placeholder="childhood memories, business ideas, family history" />
+      </div>
+      <div id="recording-status" class="status-box">Recorder idle</div>
+    </section>
+
+    <section class="panel">
+      <h2>3. Transcribing Mode</h2>
+      <div class="row">
+        <button id="transcribe-start" class="green">Generate Transcripts</button>
+      </div>
+      <div id="transcribe-status" class="status-box">No active transcription job</div>
+      <div class="progress-wrap"><progress id="transcribe-progress" max="100" value="0"></progress></div>
+    </section>
+
+    <section class="panel">
+      <h2>4. Analysis Mode</h2>
+      <div class="row">
+        <button id="analyze-start" class="green">Analyze Transcripts</button>
+      </div>
+      <div id="analyze-status" class="status-box">No active analysis job</div>
+      <div class="progress-wrap"><progress id="analyze-progress" max="100" value="0"></progress></div>
+    </section>
+
+    <section class="panel">
+      <h2>5. Here I Am</h2>
+      <div class="field-group">
+        <label for="chat-question">Ask a question</label>
+        <textarea id="chat-question" rows="5" placeholder="What themes recur in my life story? What did I say about my father? What matters most to me?"></textarea>
+      </div>
+      <div class="row">
+        <button id="chat-send" class="green">Ask</button>
+      </div>
+      <div id="chat-answer" class="status-box chat-box">No answer yet</div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+services:
+  here-i-am:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: here-i-am-app
+    ports:
+      - "8787:8000"
+    environment:
+      DATA_ROOT: /data
+      SESSIONS_DIR: /data/library/sessions
+      CHROMA_DIR: /data/appdata/chroma
+      LOGS_DIR: /data/appdata/logs
+      TMP_DIR: /data/appdata/tmp
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_CONTROL_URL: http://host.docker.internal:8778
+      OLLAMA_CHAT_MODEL: gemma4:e4b
+      OLLAMA_ANALYSIS_MODEL: gemma4:e4b
+      OLLAMA_EMBEDDING_MODEL: embeddinggemma
+      WHISPER_MODEL: base
+      CHUNK_SIZE_CHARS: 1200
+      CHUNK_OVERLAP_CHARS: 200
+    volumes:
+      - /Volumes/Personal/here-i-am:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

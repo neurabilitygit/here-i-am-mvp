@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import requests
+
+from config import settings
+
+
+class OllamaClient:
+    def __init__(self, base_url: str, chat_model: str, analysis_model: str, embedding_model: str):
+        self.base_url = base_url.rstrip("/")
+        self.chat_model = chat_model
+        self.analysis_model = analysis_model
+        self.embedding_model = embedding_model
+
+    def is_reachable(self) -> bool:
+        try:
+            resp = requests.get(f"{self.base_url}/api/tags", timeout=10)
+            return resp.ok
+        except Exception:
+            return False
+
+    def control_status(self) -> dict[str, Any]:
+        try:
+            resp = requests.get(f"{settings.ollama_control_url}/status", timeout=10)
+            if resp.ok:
+                return resp.json()
+            return {"status": "unavailable", "detail": f"HTTP {resp.status_code}"}
+        except Exception as exc:
+            return {"status": "unavailable", "detail": str(exc)}
+
+    def start(self) -> dict[str, Any]:
+        try:
+            resp = requests.post(f"{settings.ollama_control_url}/start", timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            return {"status": "unavailable", "detail": str(exc)}
+
+    def stop(self) -> dict[str, Any]:
+        try:
+            resp = requests.post(f"{settings.ollama_control_url}/stop", timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            return {"status": "unavailable", "detail": str(exc)}
+
+    def _generate(self, model: str, prompt: str) -> str:
+        resp = requests.post(
+            f"{self.base_url}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("response", "").strip()
+
+    def chat(self, prompt: str) -> str:
+        return self._generate(self.chat_model, prompt)
+
+    def analyze(self, prompt: str) -> str:
+        return self._generate(self.analysis_model, prompt)
+
+    def generate_json(self, prompt: str) -> dict[str, Any]:
+        raw = self.analyze(prompt)
+        raw = raw.strip()
+
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if len(lines) >= 3:
+                raw = "\n".join(lines[1:-1]).strip()
+
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            raw = raw[start:end + 1]
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Model did not return valid JSON: {raw[:500]}") from exc
+
+    def _embed_one_legacy(self, text: str) -> list[float]:
+        legacy = requests.post(
+            f"{self.base_url}/api/embeddings",
+            json={
+                "model": self.embedding_model,
+                "prompt": text,
+            },
+            timeout=300,
+        )
+        legacy.raise_for_status()
+        data = legacy.json()
+        embedding = data.get("embedding")
+        if not embedding:
+            raise RuntimeError("Ollama legacy embeddings response did not contain 'embedding'.")
+        return embedding
+
+    def embed(self, input: str | list[str]) -> list[float] | list[list[float]]:
+        if isinstance(input, str):
+            single = True
+            values = [input]
+        else:
+            single = False
+            values = input
+
+        resp = requests.post(
+            f"{self.base_url}/api/embed",
+            json={
+                "model": self.embedding_model,
+                "input": values if not single else values[0],
+            },
+            timeout=300,
+        )
+
+        if resp.status_code == 404:
+            embeddings = [self._embed_one_legacy(text) for text in values]
+            return embeddings[0] if single else embeddings
+
+        resp.raise_for_status()
+        data = resp.json()
+        embeddings = data.get("embeddings")
+        if not embeddings or not isinstance(embeddings, list):
+            raise RuntimeError("Ollama embed response did not contain 'embeddings'.")
+        return embeddings[0] if single else embeddings
+
+
+ollama_client = OllamaClient(
+    base_url=settings.ollama_base_url,
+    chat_model=settings.ollama_chat_model,
+    analysis_model=settings.ollama_analysis_model,
+    embedding_model=settings.ollama_embedding_model,
+)
