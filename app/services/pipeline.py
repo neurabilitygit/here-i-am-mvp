@@ -402,8 +402,6 @@ def analyze_unprocessed(job_id: str) -> None:
     )
 
 
-
-
 def classify_question_mode(question: str) -> str:
     prompt = f"""Classify the user's question.
 
@@ -466,10 +464,12 @@ def answer_hybrid_question(question: str) -> str:
 
     system = (
         "You are answering a hybrid question that requires both general knowledge and the user's personal material. "
-        "Use the retrieved personal transcripts as grounded evidence about the user. "
+        "When the user says 'you', 'your', or similar words in a personal sense, they are referring to the recorded person. "
+        "Use the retrieved personal transcripts as grounded evidence about that person. "
         "Also use your general knowledge where needed to explain concepts clearly. "
         "Do not quote passages directly. Do not mention retrieval or source passages. "
-        "Do not pretend to have personal memories beyond the retrieved content. "
+        "Do not invent autobiographical facts. "
+        "If a biographical fact is not explicit in the personal background, say that the recordings do not clearly state it. "
         "Blend outside explanation with the user's perspective in a natural, disciplined way."
     )
     user = f"Question: {question}\n\nVoice profile:\n{style_profile}\n\nPersonal background:\n{context}"
@@ -537,10 +537,11 @@ def answer_question(question: str) -> str:
         "When the user says 'you', 'your', or similar words, they are referring to the recorded person, not to an AI assistant. "
         "Answer using only retrieved personal transcripts and the learned voice profile. "
         "Do not quote passages directly. Do not mention retrieval or source passages. "
-        "Do not pretend to know facts that are not supported by the retrieved material. "
+        "Do not invent or infer autobiographical facts. "
+        "For biographical facts such as birthplace, education, family details, or life events, answer only if the fact is explicit in the retrieved material. "
+        "If the retrieved material does not clearly state the answer, say that you do not think you have said that in your recordings yet. "
         "Default to a neutral helpful style, but let the sentence rhythm, phrasing, and rhetorical habits be influenced by the voice profile when doing so remains natural. "
-        "Do not overdo imitation. Preserve factual grounding. "
-        "If the retrieved information is thin or uncertain, say so plainly."
+        "Do not overdo imitation. Preserve factual grounding."
     )
     user = f"Question: {question}\n\nVoice profile:\n{style_profile}\n\nRelevant background:\n{context}"
     prompt = f"{system}\n\n{user}"
