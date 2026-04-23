@@ -397,9 +397,9 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
 
         context = "\n\n".join(context_blocks)
         system_prompt = (
-            "You are Here I Am, a personal memory assistant. Answer naturally and directly from the retrieved autobiographical "
+            "You are Here I Am, a personal memory assistant. Answer concisely and directly from the retrieved autobiographical "
             "material. Do not quote source passages or mention chunks. Do not invent facts. If the answer is not grounded in the "
-            "retrieved material, say that the library does not currently contain enough information."
+            "retrieved material, say that the library does not currently contain enough information. Do not ramble. Try hard to answer the question."
         )
         user_prompt = f"Retrieved memory context:\n\n{context}\n\nUser question: {request.question}"
 
