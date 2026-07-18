@@ -12,12 +12,14 @@ Each directory in `library/sessions/<session_id>/` may contain:
 | `metadata.json` | Validated structured analysis | Derived |
 | `chunks.jsonl` | Portable semantic chunks and metadata | Derived/rebuild input |
 | `processing_state.json` | Versioned pipeline state | Operational |
+| `versions/<content_version>/metadata.json` | Immutable metadata for an indexed version | Derived history |
+| `versions/<content_version>/chunks.jsonl` | Immutable portable chunks for an indexed version | Derived history |
 
 Session identifiers contain a timestamp, optional title slug, and random suffix. API path validation forbids nested paths.
 
-## Processing state v2
+## Processing state v3
 
-Boolean artifact flags (`recorded`, `transcribed`, `analyzed`, `embedded`) are paired with explicit status fields and `updated_at`. The filesystem remains authoritative: `/api/reconciliation` compares declared state to artifacts and never silently repairs discrepancies.
+Boolean artifact flags are paired with explicit status fields, `updated_at`, and `active_content_version`. The active version is changed only after its versioned artifacts and Chroma records are durable. A revised transcript is ineligible for retrieval until its replacement version is activated.
 
 ## Metadata v2
 
@@ -28,7 +30,7 @@ Boolean artifact flags (`recorded`, `transcribed`, `analyzed`, `embedded`) are p
 - Active: `here_i_am_chunks`
 - Migration candidate: `here_i_am_chunks_v2`
 
-Chunk IDs are deterministic: `<session_id>::chunk::<index>`. Chroma is disposable derived state; transcript and metadata artifacts are retained. Reindexing deletes and replaces only matching session records in the target collection. It never switches or deletes the active collection.
+Legacy chunk IDs remain readable as `<session_id>::chunk::<index>`. New IDs are `<session_id>::version::<content_version>::chunk::<index>`. Chroma is append-only: the application never deletes vectors. Superseded and archived records remain preserved, while retrieval accepts only the version named in the active filesystem manifest. Reindexing adds missing versioned records to the target collection and never switches collections automatically.
 
 ## Durable jobs
 

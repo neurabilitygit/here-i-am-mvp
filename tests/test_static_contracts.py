@@ -1,6 +1,32 @@
 from pathlib import Path
 
 
+def test_chroma_is_append_only():
+    root = Path(__file__).parents[1]
+    sources = '\n'.join(
+        path.read_text(encoding='utf-8')
+        for base in (root / 'app', root / 'scripts')
+        for path in base.rglob('*.py')
+        if '__pycache__' not in path.parts
+    )
+    assert 'collection.delete(' not in sources
+    assert 'target.delete(' not in sources
+    assert '.delete(where' not in sources
+
+
+def test_frontend_ignores_stale_chat_completions_and_batches_screen_reader_updates():
+    root = Path(__file__).parents[1]
+    script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
+    core = (root / 'app' / 'static' / 'app-core.js').read_text(encoding='utf-8')
+    template = (root / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+    assert 'chatGeneration' in core
+    assert core.lstrip().startswith('(() => {')
+    assert 'generation !== state.chatGeneration' in script
+    assert 'answer-announcement' in template
+    assert 'id="answer-text" class="answer-text" aria-live=' not in template
+    assert template.index('/static/app-core.js') < template.index('/static/app.js')
+
+
 def test_background_voice_is_single_flight_in_the_browser():
     root = Path(__file__).parents[1]
     script_path = root / 'app' / 'static' / 'app.js'

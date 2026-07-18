@@ -12,8 +12,6 @@ def utc_now() -> datetime:
 
 class RecordingUploadResponse(BaseModel):
     session_id: str
-    session_path: str
-    flac_path: str
     message: str
 
 

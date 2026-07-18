@@ -68,6 +68,10 @@ def test_lexical_personal_context_prefers_speakers_relationship(tmp_path, monkey
         '\n'.join(json.dumps(record) for record in records),
         encoding='utf-8',
     )
+    (session_dir / 'processing_state.json').write_text(
+        json.dumps({'embedded': True, 'active_content_version': None}),
+        encoding='utf-8',
+    )
     monkeypatch.setattr('services.pipeline.list_session_dirs', lambda: [session_dir])
 
     docs, metas, distances = lexical_personal_context('Are you married?')

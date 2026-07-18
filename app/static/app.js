@@ -1,78 +1,4 @@
-const byId = (id) => document.getElementById(id);
-const state = {
-  preferences: null,
-  sessions: [],
-  activeSessionId: null,
-  lastQuestion: '',
-  lastAnswer: '',
-  lastMode: '',
-  lastProvider: '',
-  cloudConfigured: false,
-  cloudKeySource: 'none',
-  runtimeCloudKeyAllowed: false,
-  providerStatus: null,
-  voice: null,
-  mediaRecorder: null,
-  mediaStream: null,
-  recordedChunks: [],
-  recordStartedAt: 0,
-  recordTimer: null,
-  recordAnimation: null,
-  recordStopRequested: false,
-  recordFinalizing: false,
-  recordError: '',
-  chatAbort: null,
-  voiceAbort: null,
-  voiceRequestId: null,
-  voiceTimeout: null,
-  voicePreparing: false,
-  voiceTimedOut: false,
-  voiceSources: [],
-  voiceNextTime: 0,
-  voicePlaying: false,
-  voiceStoppedByUser: false,
-  voicePlaybackTimer: null,
-  voicePrerenderAbort: null,
-  voicePrerenderRequestId: null,
-  voicePrerenderText: '',
-  voicePrerenderBlob: null,
-  voicePrerenderFetchHeld: false,
-  audioContext: null,
-  audioAnalyser: null,
-  audioBufferSource: null,
-  audioAnimation: null,
-  speechRecognition: null,
-  fetchTaskCount: 0,
-  fetchButtonUntil: 0,
-  fetchGraceTimer: null,
-  fetchHideTimer: null,
-  fetchStartedAt: 0,
-  fetchPoint: null,
-  fetchMotionActive: false,
-  fetchLoopRunning: false,
-  fetchAnimations: [],
-  fetchSitTimer: null,
-  fetchSitResolve: null,
-  activityFetchHeld: false,
-  voiceFetchHeld: false,
-  memoryBatch: null,
-  batchWatching: false,
-  batchPollTimer: null,
-};
-
-async function api(url, options = {}) {
-  const animate = performance.now() < state.fetchButtonUntil || state.fetchTaskCount > 0;
-  if (animate) beginFetchTask();
-  try {
-    const response = await fetch(url, options);
-    const contentType = response.headers.get('content-type') || '';
-    const data = contentType.includes('application/json') ? await response.json() : await response.text();
-    if (!response.ok) throw new Error(typeof data === 'object' ? data.detail || JSON.stringify(data) : data);
-    return data;
-  } finally {
-    if (animate) endFetchTask();
-  }
-}
+const {byId, state, api} = window.HereIAmCore;
 
 function showFetchCompanion() {
   const companion = byId('fetch-companion');
@@ -268,8 +194,9 @@ function showScene(name) {
     panel.classList.toggle('active', active);
   });
   document.querySelectorAll('[data-go]').forEach((button) => button.classList.toggle('active', button.dataset.go === name));
-  if (name === 'memories') refreshLibrary();
+  if (name === 'memories') Promise.all([refreshLibrary(), refreshMemoryQueue()]);
   if (name === 'talk') byId('chat-question').focus();
+  else window.requestAnimationFrame(() => byId(`${name}-title`)?.focus());
 }
 
 function setActivity(visible, title = '', detail = '') {
@@ -350,7 +277,7 @@ function renderProviderStatus() {
   const readiness = byId('provider-readiness');
   if (selected === 'openai') {
     note.textContent = state.cloudConfigured
-      ? 'Best-answer mode sends only the current question and selected memory excerpts to OpenAI.'
+      ? 'Best-answer mode sends the current question, selected memory excerpts, and a short derived speaking-style profile to OpenAI.'
       : 'Best-answer mode is unavailable until an API key is configured by the operator.';
     readiness.textContent = state.cloudConfigured ? '● OpenAI is configured' : '○ OpenAI needs configuration';
     readiness.dataset.ready = state.cloudConfigured ? 'true' : 'false';
@@ -465,7 +392,9 @@ async function askQuestion(question) {
   cancelVoicePrerender();
   beginFetchTask();
   state.chatAbort?.abort();
-  state.chatAbort = new AbortController();
+  const generation = ++state.chatGeneration;
+  const controller = new AbortController();
+  state.chatAbort = controller;
   state.lastQuestion = value;
   state.lastAnswer = '';
   byId('chat-question').value = '';
@@ -473,6 +402,7 @@ async function askQuestion(question) {
   byId('answer-card').hidden = false;
   byId('answer-card').classList.remove('complete');
   byId('answer-text').textContent = '';
+  byId('answer-announcement').textContent = '';
   byId('speak-answer').disabled = true;
   byId('compare-answer').disabled = true;
   setPresence('Finding the right memories…', 'thinking');
@@ -481,13 +411,15 @@ async function askQuestion(question) {
   try {
     const response = await fetch('/api/chat/stream', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({question:value}), signal: state.chatAbort.signal,
+      body: JSON.stringify({question:value}), signal: controller.signal,
     });
+    if (generation !== state.chatGeneration) return;
     if (!response.ok) throw new Error((await response.json()).detail || 'The answer could not be started');
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     while (true) {
       const {value: chunk, done} = await reader.read();
+      if (generation !== state.chatGeneration) { await reader.cancel(); return; }
       if (done) break;
       buffer += decoder.decode(chunk, {stream:true}).replace(/\r\n/g, '\n');
       let boundary;
@@ -513,6 +445,7 @@ async function askQuestion(question) {
       }
     }
     byId('answer-card').classList.add('complete');
+    byId('answer-announcement').textContent = 'Answer ready. The written answer appears above the answer controls.';
     byId('compare-answer').disabled = !state.lastAnswer || !state.cloudConfigured || state.lastProvider === 'memory';
     setPresence('Ready for another question', 'resting');
     if (state.lastProvider === 'memory') updateSpeakButton();
@@ -520,12 +453,19 @@ async function askQuestion(question) {
     else if (state.preferences.pre_render_voice && state.voice?.enabled && state.lastAnswer) startVoicePrerender();
     else updateSpeakButton();
   } catch (error) {
-    if (error.name !== 'AbortError') {
+    if (error.name !== 'AbortError' && generation === state.chatGeneration) {
       byId('answer-text').textContent = `I couldn't answer that just now. ${error.message}`;
       byId('answer-card').classList.add('complete');
       setPresence('Something needs attention', 'resting');
+      byId('answer-announcement').textContent = 'The answer could not be completed.';
     }
-  } finally { byId('chat-send').disabled = false; endFetchTask(); }
+  } finally {
+    if (generation === state.chatGeneration) {
+      state.chatAbort = null;
+      byId('chat-send').disabled = false;
+    }
+    endFetchTask();
+  }
 }
 
 async function compareAnswers() {
@@ -1069,7 +1009,7 @@ function formatMemoryDate(sessionId){const match=sessionId.match(/^(\d{4})-(\d{2
 
 function renderMemories(){
   const query=byId('memory-search').value.trim().toLowerCase(); const sessions=state.sessions.filter((item)=>!query||item.title.toLowerCase().includes(query)||item.session_id.toLowerCase().includes(query));
-  const cards=sessions.map((session)=>{const button=document.createElement('button');button.type='button';button.className='memory-card';
+  const cards=sessions.map((session)=>{const button=document.createElement('button');button.type='button';button.className='memory-card';button.setAttribute('aria-label',`${session.title}. ${session.embedded?'Ready to answer questions':'Waiting for local preparation'}.`);
     const date=document.createElement('small');date.textContent=formatMemoryDate(session.session_id);const title=document.createElement('h3');title.textContent=session.title;const status=document.createElement('div');status.className='memory-state';status.title=session.embedded?'Ready to answer questions':'Waiting for the local batch';
     ['recorded','transcribed','embedded'].forEach((key)=>{const dot=document.createElement('span');dot.classList.toggle('ready',session[key]);status.append(dot)});button.append(date,title,status);button.addEventListener('click',()=>openMemory(session.session_id));return button;});
   byId('memory-gallery').replaceChildren(...cards);byId('memory-summary').textContent=`${sessions.length} ${sessions.length===1?'memory':'memories'} in your story`;
@@ -1105,6 +1045,7 @@ async function createVoice(){
 }
 
 async function revokeVoice(){if(!window.confirm('Turn off the AI voice and remove its derived reference? Original recordings will stay safe.'))return;state.voice=await api('/api/voice/revoke?delete_reference=true',{method:'POST'});await loadVoiceStatus();}
+async function clearVoiceCache(){byId('voice-setting-status').textContent='Clearing prepared voice files…';try{const result=await api('/api/voice/cache/clear',{method:'POST'});state.voicePrerenderBlob=null;byId('voice-setting-status').textContent=result.detail;}catch(error){byId('voice-setting-status').textContent=error.message;}}
 
 function setupSpeechQuestion(){
   const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;if(!Recognition){byId('voice-question').hidden=true;return;}
@@ -1113,7 +1054,7 @@ function setupSpeechQuestion(){
 }
 
 async function runReconciliation(){byId('technical-status').textContent='Checking without changing anything…';try{const report=await api('/api/reconciliation');byId('technical-status').textContent=report.issue_count?`${report.issue_count} items need attention. No automatic repairs were made.`:`All ${report.checked_sessions} memories are internally consistent.`;}catch(error){byId('technical-status').textContent=error.message;}}
-async function createBackup(){byId('technical-status').textContent='Making a safety copy…';try{const result=await api('/api/backups/structured',{method:'POST'});byId('technical-status').textContent=`Safety copy ${result.backup_id} contains ${result.files} files.`;}catch(error){byId('technical-status').textContent=error.message;}}
+async function createBackup(){byId('technical-status').textContent='Making a full safety copy…';try{const result=await api('/api/backups/structured',{method:'POST'});byId('technical-status').textContent=`Full safety copy ${result.backup_id} contains ${result.files} files.${result.warning?` ${result.warning}`:''}`;}catch(error){byId('technical-status').textContent=error.message;}}
 
 function bindEvents(){
   window.addEventListener('pagehide',cancelVoiceOnPageExit);
@@ -1129,7 +1070,7 @@ function bindEvents(){
   byId('memory-search').addEventListener('input',renderMemories);byId('memory-save').addEventListener('click',saveMemory);
   setupMemoryImport();
   byId('memory-batch-open').addEventListener('click',openMemoryBatch);byId('memory-batch-close').addEventListener('click',()=>byId('memory-batch-dialog').close());byId('memory-batch-confirm').addEventListener('change',(event)=>{byId('memory-batch-start').disabled=!event.currentTarget.checked;});byId('memory-batch-start').addEventListener('click',startMemoryBatch);
-  byId('voice-setup-button').addEventListener('click',openVoiceSetup);byId('voice-create').addEventListener('click',createVoice);byId('voice-revoke-button').addEventListener('click',revokeVoice);
+  byId('voice-setup-button').addEventListener('click',openVoiceSetup);byId('voice-create').addEventListener('click',createVoice);byId('voice-cache-clear').addEventListener('click',clearVoiceCache);byId('voice-revoke-button').addEventListener('click',revokeVoice);
   byId('reconcile-run').addEventListener('click',runReconciliation);byId('backup-create').addEventListener('click',createBackup);byId('warm-model').addEventListener('click',async()=>{byId('technical-status').textContent='Warming local AI…';try{await api('/api/providers/local/warm',{method:'POST'});byId('technical-status').textContent='Local AI is warm and ready.';}catch(error){byId('technical-status').textContent=error.message;}});
   byId('onboarding-start').addEventListener('click',async()=>{state.preferences.onboarding_complete=true;await api('/api/experience',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:state.preferences})});byId('onboarding-dialog').close();});
 }

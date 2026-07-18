@@ -8,7 +8,7 @@
 4. Check `/api/health` for application/storage liveness and `/api/ready` for Ollama readiness.
 5. For local cloned voice, run `scripts/start_voice.sh` and check `http://127.0.0.1:8779/health`.
 
-For the current Railway-backed OpenAI benchmark, recreate the Here-I-Am container with `OPENAI_API_KEY` loaded in process memory from the linked Rising Senior Railway service. Do not copy the key into Compose, preferences, logs, or source control. Here I Am defaults to the lower-cost `gpt-5.4-mini`; the Railway service's own model selection is not changed.
+For the current Railway-backed OpenAI benchmark, the desktop launcher reads `OPENAI_API_KEY` from the linked Rising Senior Railway service, writes it to a mode-600 host secret, and mounts that file read-only at `/run/secrets/openai_api_key`. The value is not placed in Compose, preferences, logs, or source control. Here I Am defaults to the lower-cost `gpt-5.4-mini`; the Railway service's own model selection is not changed.
 
 ## Production answer-engine controls
 
@@ -19,7 +19,7 @@ The production UI exposes two explicit choices under **Settings → Talk answer 
 
 The selected provider is persisted atomically in `/data/appdata/preferences.json`. A change is rejected before persistence when the destination provider is not usable: Local Gemma requires a reachable Ollama service and an installed chat model; OpenAI requires a production credential and a model in `ALLOWED_OPENAI_MODELS`. There is no automatic fallback in either direction. The settings response and `/api/providers/status` never expose credentials.
 
-Production defaults disable browser entry of API keys with `ALLOW_RUNTIME_CLOUD_KEY=false`. Supply the key through `OPENAI_API_KEY`, or preferably mount a root-readable secret and set `OPENAI_API_KEY_FILE` to its container path. Browser-entered session keys are intended only for controlled development and require `ALLOW_RUNTIME_CLOUD_KEY=true`.
+Production defaults disable browser entry of API keys with `ALLOW_RUNTIME_CLOUD_KEY=false`. Prefer a mode-600 host secret mounted read-only and set `OPENAI_API_KEY_FILE` to its container path. Browser-entered session keys are intended only for controlled development and require `ALLOW_RUNTIME_CLOUD_KEY=true`.
 
 `/api/health` is the container liveness check. `/api/ready` is the deployment readiness gate and requires:
 
@@ -34,7 +34,7 @@ Long local generations emit a server-sent-event heartbeat every 15 seconds. Upst
 - Transcript updates create a prior revision and make derived analysis stale.
 - Session archive requires `confirm=true` and moves, rather than deletes, data.
 - Vector reindex requires `confirm=true`, writes only the migration collection, and does not activate it.
-- Structured backups copy transcripts, metadata, chunks, state, and voice profile with SHA-256 checksums. They intentionally exclude audio and model weights; those require a separate volume-level backup policy.
+- Full rebuildable backups include original recordings, transcripts, revisions, versioned artifacts, preferences, audit/job/voice state, and a JSONL export of every Chroma document, metadata record, and embedding. Model weights are excluded. Set `BACKUP_ROOT` to another encrypted volume; the UI warns when backup and source share one device.
 - Voice preparation requires explicit rights confirmation and creates only `appdata/voice/voice_reference.wav` plus its short reference transcript and consent status.
 - Voice revocation disables synthesis and may delete derived references without touching session audio.
 - Cloud generation never activates as an automatic fallback.
@@ -57,6 +57,7 @@ Before local synthesis, the app unloads Gemma only when it is resident, leaving 
 - Run reconciliation before and after maintenance.
 - Restore authoritative files first; rebuild metadata/chunks/index afterward.
 - Never copy a Chroma directory while it is being written. Prefer a stopped-app volume snapshot or rebuild from portable artifacts.
+- Verify a backup without changing data using `python scripts/restore_backup.py <backup> <empty-target>`. Add `--confirm-empty-target` only when restoring into a genuinely empty directory. Restore never overwrites or deletes existing data.
 
 ## Deployment gate
 

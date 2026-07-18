@@ -89,6 +89,70 @@ def reconciliation_report() -> ReconciliationReport:
                     detail='Metadata exists but portable chunk output is missing',
                 )
             )
+        active_version = str(state.get('active_content_version') or '')
+        if state.get('embedded', False) and active_version:
+            metadata_path = session_paths(path)['metadata']
+            chunks_path = session_paths(path)['chunks']
+            try:
+                metadata = load_json(metadata_path)
+                if str(metadata.get('content_version') or '') != active_version:
+                    issues.append(ReconciliationIssue(
+                        session_id=summary.session_id,
+                        code='metadata_version_mismatch',
+                        detail='metadata.json does not match the activated content version',
+                    ))
+                chunk_versions = {
+                    str((json.loads(line).get('metadata') or {}).get('content_version') or '')
+                    for line in chunks_path.read_text(encoding='utf-8').splitlines()
+                    if line.strip()
+                }
+                if chunk_versions != {active_version}:
+                    issues.append(ReconciliationIssue(
+                        session_id=summary.session_id,
+                        code='chunk_version_mismatch',
+                        detail='chunks.jsonl does not match the activated content version',
+                    ))
+            except (OSError, json.JSONDecodeError):
+                issues.append(ReconciliationIssue(
+                    session_id=summary.session_id,
+                    code='active_artifact_unreadable',
+                    detail='An activated metadata or chunk artifact is unreadable',
+                ))
+
+    # Chroma is append-only. Reconciliation verifies that every activated
+    # version is represented without treating preserved historical vectors as
+    # orphans or deleting anything.
+    try:
+        from services.pipeline import chroma_collection
+
+        vector_data = chroma_collection().get(include=['metadatas'])
+        vector_versions: dict[tuple[str, str], int] = {}
+        for metadata in vector_data.get('metadatas') or []:
+            metadata = metadata or {}
+            key = (
+                str(metadata.get('session_id', '')),
+                str(metadata.get('content_version') or 'legacy'),
+            )
+            vector_versions[key] = vector_versions.get(key, 0) + 1
+        for summary in sessions:
+            path = safe_session_dir(summary.session_id)
+            state_path = session_paths(path)['state']
+            state = load_json(state_path) if state_path.exists() else {}
+            if not state.get('embedded', False):
+                continue
+            version = str(state.get('active_content_version') or 'legacy')
+            if not vector_versions.get((summary.session_id, version)):
+                issues.append(ReconciliationIssue(
+                    session_id=summary.session_id,
+                    code='missing_active_vectors',
+                    detail=f'No Chroma records exist for activated version {version}',
+                ))
+    except Exception as exc:
+        issues.append(ReconciliationIssue(
+            session_id='system',
+            code='vector_reconciliation_unavailable',
+            detail=f'Chroma could not be inspected: {type(exc).__name__}',
+        ))
     return ReconciliationReport(
         checked_sessions=len(sessions),
         issue_count=len(issues),
@@ -120,17 +184,16 @@ def build_session_export(session_id: str) -> Path:
 
 def create_structured_backup() -> dict:
     root = Path(settings.data_root)
-    backup_root = root / 'appdata' / 'backups'
+    backup_root = Path(settings.backup_root)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     target = backup_root / stamp
     target.mkdir(parents=True, exist_ok=False)
-    included_names = {'transcript.md', 'metadata.json', 'chunks.jsonl', 'processing_state.json'}
     manifest: list[dict] = []
     for source in sorted(Path(settings.sessions_dir).rglob('*')):
         # ExFAT/iCloud may leave unreadable AppleDouble sidecars. Filter by
         # supported filename before stat-ing and treat filesystem artifacts as
         # non-authoritative rather than allowing a backup to fail.
-        if source.name not in included_names:
+        if source.name.startswith('._'):
             continue
         try:
             if not source.is_file():
@@ -143,13 +206,77 @@ def create_structured_backup() -> dict:
         shutil.copy2(source, destination)
         digest = hashlib.sha256(destination.read_bytes()).hexdigest()
         manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': digest})
-    voice = root / 'appdata' / 'voice_profile.json'
-    if voice.exists():
-        relative = voice.relative_to(root)
+    appdata = root / 'appdata'
+    excluded_roots = {
+        Path(settings.chroma_dir).resolve(),
+        backup_root.resolve(),
+        Path(settings.tmp_dir).resolve(),
+        Path(settings.locks_dir).resolve(),
+        Path(settings.exports_dir).resolve(),
+        (appdata / 'models').resolve(),
+    }
+    for source in sorted(appdata.rglob('*')):
+        try:
+            resolved = source.resolve()
+            if source.name.startswith('._') or not source.is_file():
+                continue
+            if any(resolved == excluded or excluded in resolved.parents for excluded in excluded_roots):
+                continue
+        except OSError:
+            continue
+        relative = source.relative_to(root)
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(voice, destination)
+        shutil.copy2(source, destination)
         manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': hashlib.sha256(destination.read_bytes()).hexdigest()})
+
+    from services.pipeline import chroma_collection
+
+    collection = chroma_collection()
+    vector_data = collection.get(include=['documents', 'metadatas', 'embeddings'])
+    vector_documents = vector_data.get('documents') or []
+    vector_metadatas = vector_data.get('metadatas') or []
+    vector_embeddings = vector_data.get('embeddings')
+    vector_export = target / 'appdata' / 'chroma-export.jsonl'
+    vector_export.parent.mkdir(parents=True, exist_ok=True)
+    with vector_export.open('w', encoding='utf-8') as handle:
+        for index, identifier in enumerate(vector_data.get('ids') or []):
+            record = {
+                'id': identifier,
+                'document': vector_documents[index],
+                'metadata': vector_metadatas[index],
+                'embedding': (
+                    vector_embeddings[index].tolist()
+                    if hasattr(vector_embeddings[index], 'tolist')
+                    else vector_embeddings[index]
+                ),
+            }
+            handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+        handle.flush()
+        import os
+        os.fsync(handle.fileno())
+    manifest.append({
+        'path': str(vector_export.relative_to(target)),
+        'bytes': vector_export.stat().st_size,
+        'sha256': hashlib.sha256(vector_export.read_bytes()).hexdigest(),
+    })
     manifest_path = target / 'manifest.json'
-    manifest_path.write_text(json.dumps({'created_at': datetime.now(timezone.utc).isoformat(), 'files': manifest}, indent=2), encoding='utf-8')
-    return {'backup_id': stamp, 'path': str(target), 'files': len(manifest), 'bytes': sum(item['bytes'] for item in manifest)}
+    try:
+        same_volume = root.stat().st_dev == backup_root.stat().st_dev
+    except OSError:
+        same_volume = root.resolve() in backup_root.resolve().parents or backup_root.resolve() == root.resolve()
+    manifest_path.write_text(json.dumps({
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'backup_kind': 'full-rebuildable',
+        'chroma_collection': settings.chroma_collection,
+        'same_volume_as_source': same_volume,
+        'files': manifest,
+    }, indent=2), encoding='utf-8')
+    return {
+        'backup_id': stamp,
+        'backup_kind': 'full-rebuildable',
+        'files': len(manifest),
+        'bytes': sum(item['bytes'] for item in manifest),
+        'same_volume_as_source': same_volume,
+        'warning': 'Configure BACKUP_ROOT on another encrypted volume for disaster recovery.' if same_volume else '',
+    }

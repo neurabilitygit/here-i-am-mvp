@@ -6,6 +6,7 @@ import time
 import wave
 
 import main
+from config import settings
 from models.schemas import BenchmarkAnswer, ChatBenchmarkResponse, ChatResponse
 from services.preferences import load_preferences
 from services.storage import ensure_directories
@@ -23,6 +24,16 @@ def test_health_and_security_headers():
     assert response.headers['content-security-policy'].startswith("default-src 'self'")
     assert 'camera=()' in response.headers['permissions-policy']
     assert 'Selected answer engine' in client.get('/').text
+    assert client.get('/docs').status_code == 404
+    assert response.headers['x-request-id']
+
+
+def test_cross_origin_mutation_is_rejected():
+    response = client.post(
+        '/api/fidelity/rebuild',
+        headers={'Origin': 'https://malicious.example'},
+    )
+    assert response.status_code == 403
 
 
 def test_session_and_reconciliation_contracts():
@@ -51,7 +62,9 @@ def test_audio_upload_enters_the_unprocessed_memory_queue():
     assert response.status_code == 200
     payload = response.json()
     assert 'a-family-story' in payload['session_id']
-    assert Path(payload['flac_path']).exists()
+    assert 'flac_path' not in payload
+    assert 'session_path' not in payload
+    assert (Path(settings.sessions_dir) / payload['session_id'] / 'recording.flac').exists()
     status = client.get('/api/memory-batch/status').json()
     assert status['queued_recordings'] >= 1
 
@@ -78,7 +91,7 @@ def test_stream_sends_heartbeat_while_provider_is_working(monkeypatch):
         mode='GENERAL', sources=[], prompt='Synthetic prompt', retrieval_seconds=0.0,
     ))
     monkeypatch.setattr(main.settings, 'provider_stream_heartbeat_seconds', 0.01)
-    monkeypatch.setattr(main, 'record_stream_audit', lambda *_args: None)
+    monkeypatch.setattr(main, 'record_stream_audit', lambda *_args, **_kwargs: None)
 
     response = client.post('/api/chat/stream', json={'question': 'Synthetic question'})
 

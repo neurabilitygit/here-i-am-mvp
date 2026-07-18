@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import fcntl
+import re
 import threading
 import traceback
 import uuid
@@ -23,6 +25,7 @@ class JobManager:
         self._jobs: dict[str, JobProgress] = {}
         self._lock = threading.Lock()
         self._active_modes: set[str] = set()
+        self._mode_lock_handles: dict[str, object] = {}
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='here-i-am-job')
         self._root = Path(settings.jobs_dir)
         self._root.mkdir(parents=True, exist_ok=True)
@@ -49,6 +52,15 @@ class JobManager:
         with self._lock:
             if mode in self._active_modes:
                 raise JobConflictError(f'A {mode} job is already active')
+            lock_name = re.sub(r'[^A-Za-z0-9_-]+', '-', mode).strip('-') or 'job'
+            lock_path = Path(settings.locks_dir) / f'{lock_name}.job.lock'
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = lock_path.open('a+', encoding='utf-8')
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                handle.close()
+                raise JobConflictError(f'A {mode} job is already active in another application process') from exc
         job = JobProgress(
             id=str(uuid.uuid4()),
             mode=mode,
@@ -62,6 +74,7 @@ class JobManager:
         with self._lock:
             self._jobs[job.id] = job
             self._active_modes.add(mode)
+            self._mode_lock_handles[mode] = handle
             self._save(job)
         return job
 
@@ -90,6 +103,12 @@ class JobManager:
             job.updated_at = datetime.now(timezone.utc)
             if job.completed:
                 self._active_modes.discard(job.mode)
+                handle = self._mode_lock_handles.pop(job.mode, None)
+                if handle is not None:
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        handle.close()
             self._save(job)
 
     def run_in_thread(self, job_id: str, target: Callable[[], None]) -> None:

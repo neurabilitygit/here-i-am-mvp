@@ -42,7 +42,7 @@ def create_session_dir(title: str | None = None) -> tuple[str, Path]:
     save_json(
         session_path / 'processing_state.json',
         {
-            'state_version': 2,
+            'state_version': 3,
             'session_id': session_id,
             'recorded': True,
             'transcribed': False,
@@ -51,6 +51,7 @@ def create_session_dir(title: str | None = None) -> tuple[str, Path]:
             'transcription_status': 'pending',
             'analysis_status': 'pending',
             'embedding_status': 'pending',
+            'active_content_version': None,
             'updated_at': datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -83,7 +84,7 @@ def update_processing_state(session_path: Path, **updates: Any) -> None:
     state_path = session_path / 'processing_state.json'
     state = load_json(state_path) if state_path.exists() else {}
     state.update(updates)
-    state.setdefault('state_version', 2)
+    state['state_version'] = max(int(state.get('state_version', 2)), 3)
     state['updated_at'] = datetime.now(timezone.utc).isoformat()
     save_json(state_path, state)
 

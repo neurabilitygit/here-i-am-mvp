@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
+from fastapi.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 from config import settings
@@ -30,9 +31,9 @@ from services.ollama_client import ollama_client
 from services.fidelity import build_speaker_fingerprint, load_speaker_fingerprint, save_answer_feedback
 from services.pipeline import analyze_unprocessed, answer_question, benchmark_question, memory_queue_status, prepare_answer, process_memory_batch, reindex_to_migration_collection, stream_prepared_answer, transcribe_unprocessed
 from services.preferences import cloud_api_key, load_preferences, public_preferences, save_preferences, set_runtime_cloud_key
-from services.providers import active_provider, provider_status, public_provider_error, record_stream_audit, transition_provider, validate_provider_selection
+from services.providers import active_provider, provider_status, public_provider_error, record_generation_failure, record_stream_audit, transition_provider, validate_provider_selection
 from services.storage import archive_session, create_session_dir, ensure_directories, list_session_dirs, revise_transcript, safe_session_dir, session_lock, session_paths
-from services.voice import cancel_synthesis_stream, list_voice_candidates, load_voice_status, open_synthesis_stream, prepare_voice_reference, revoke_voice, synthesize
+from services.voice import LOCAL_BRIDGE_HEADERS, cancel_synthesis_stream, list_voice_candidates, load_voice_status, prepare_voice_reference, revoke_voice, synthesize
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -51,7 +52,13 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    lifespan=lifespan,
+    docs_url='/docs' if settings.api_docs_enabled else None,
+    redoc_url='/redoc' if settings.api_docs_enabled else None,
+    openapi_url='/openapi.json' if settings.api_docs_enabled else None,
+)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.add_middleware(
     CORSMiddleware,
@@ -71,17 +78,28 @@ app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'static')), name='stat
 @app.middleware('http')
 async def request_observability(request: Request, call_next):
     started = time.perf_counter()
+    request_id = request.headers.get('X-Request-ID', '')
+    if not request_id or len(request_id) > 80 or not request_id.replace('-', '').replace('_', '').isalnum():
+        request_id = str(uuid.uuid4())
+    origin = request.headers.get('origin')
     batch_allowed = (
         request.method == 'GET'
         or request.url.path == '/api/memory-batch/start'
         or request.url.path.startswith('/api/voice/cancel/')
     )
-    if job_manager.is_active('memory-batch') and request.url.path.startswith('/api/') and not batch_allowed:
-        return JSONResponse(
+    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and origin and origin not in settings.cors_origin_list:
+        response = JSONResponse(status_code=403, content={'detail': 'Cross-origin changes are not allowed'})
+    elif job_manager.is_active('memory-batch') and request.url.path.startswith('/api/') and not batch_allowed:
+        response = JSONResponse(
             status_code=423,
             content={'detail': 'Local memory processing is running. Here I Am will be available when the batch finishes.'},
         )
-    response = await call_next(request)
+    else:
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception('unhandled request failure request_id=%s path=%s', request_id, request.url.path)
+            response = JSONResponse(status_code=500, content={'detail': 'Here I Am encountered an unexpected local error.'})
     elapsed = time.perf_counter() - started
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
@@ -93,13 +111,14 @@ async def request_observability(request: Request, call_next):
         "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     )
     response.headers['Cache-Control'] = 'no-store'
-    logger.info('request method=%s path=%s status=%s elapsed=%.3f', request.method, request.url.path, response.status_code, elapsed)
+    response.headers['X-Request-ID'] = request_id
+    logger.info('request id=%s method=%s path=%s status=%s elapsed=%.3f', request_id, request.method, request.url.path, response.status_code, elapsed)
     return response
 
 
 @app.get('/', response_class=HTMLResponse)
 def home(request: Request):
-    return templates.TemplateResponse('index.html', {'request': request, 'chat_model': settings.ollama_chat_model})
+    return templates.TemplateResponse(request, 'index.html', {'chat_model': settings.ollama_chat_model})
 
 
 @app.get('/api/health', response_model=GenericStatus)
@@ -190,6 +209,8 @@ def stop_ollama():
 
 @app.post('/api/recordings/upload', response_model=RecordingUploadResponse)
 async def upload_recording(file: UploadFile = File(...), title: str | None = Form(default=None)):
+    if title and len(title.strip()) > 160:
+        raise HTTPException(status_code=422, detail='Recording title is too long')
     session_id, session_dir = create_session_dir(title=title)
     source_path = session_dir / 'upload.bin'
     total = 0
@@ -208,7 +229,17 @@ async def upload_recording(file: UploadFile = File(...), title: str | None = For
     command = [
         'ffmpeg', '-y', '-i', str(source_path), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'flac', str(flac_path)
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    try:
+        completed = await run_in_threadpool(
+            subprocess.run,
+            command,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(status_code=408, detail='The uploaded recording took too long to validate') from exc
     if completed.returncode != 0 or not flac_path.exists():
         source_path.unlink(missing_ok=True)
         try:
@@ -219,10 +250,24 @@ async def upload_recording(file: UploadFile = File(...), title: str | None = For
         logger.error('ffmpeg conversion failed for session=%s: %s', session_id, completed.stderr[-2000:])
         raise HTTPException(status_code=422, detail='The uploaded file could not be converted to audio')
     source_path.unlink(missing_ok=True)
+    probe = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', str(flac_path)]
+    try:
+        duration_result = await run_in_threadpool(
+            subprocess.run,
+            probe,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        duration = float(json.loads(duration_result.stdout)['format']['duration'])
+    except (subprocess.TimeoutExpired, KeyError, ValueError, json.JSONDecodeError) as exc:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(status_code=422, detail='The uploaded audio duration could not be verified') from exc
+    if duration <= 0 or duration > settings.max_upload_seconds:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail='The recording duration exceeds the configured limit')
     return RecordingUploadResponse(
         session_id=session_id,
-        session_path=str(session_dir),
-        flac_path=str(flac_path),
         message='Recording saved as FLAC',
     )
 
@@ -319,6 +364,7 @@ def chat(payload: ChatRequest):
         answer = answer_question(payload.question.strip())
     except Exception as exc:
         logger.exception('chat failed')
+        record_generation_failure(status['active'], status.get('cloud_model') or status.get('local_model', ''), time.time() - start, exc)
         raise HTTPException(status_code=503, detail=public_provider_error(status['active'], exc)) from exc
     total = time.time() - start
     print(f"[TIMING] total_chat_time={total:.2f}s")
@@ -329,6 +375,8 @@ def chat(payload: ChatRequest):
 
 @app.post('/api/chat/stream')
 def chat_stream(payload: ChatRequest):
+    if not payload.question.strip():
+        raise HTTPException(status_code=400, detail='Question is required')
     status = provider_status()
     if not status['active_ready']:
         raise HTTPException(status_code=503, detail='The selected answer engine is not ready. Check Settings.')
@@ -348,42 +396,61 @@ def chat_stream(payload: ChatRequest):
         first_token = None
         answer_parts = []
         output: queue.Queue[tuple[str, object]] = queue.Queue()
+        canceled = threading.Event()
 
         def produce() -> None:
+            stream = None
             try:
-                for token in current_provider.stream(prepared.prompt):
+                stream = current_provider.stream(prepared.prompt)
+                for token in stream:
+                    if canceled.is_set():
+                        break
                     output.put(('token', token))
             except Exception as exc:
                 output.put(('error', exc))
             finally:
+                if stream is not None and hasattr(stream, 'close'):
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
                 output.put(('done', None))
 
         threading.Thread(target=produce, name=f'chat-{current_provider.name}', daemon=True).start()
         failed = False
-        while True:
-            try:
-                event, value = output.get(timeout=settings.provider_stream_heartbeat_seconds)
-            except queue.Empty:
-                yield ': keep-alive\n\n'
-                continue
-            if event == 'token':
-                token = str(value)
-                if first_token is None:
-                    first_token = time.perf_counter() - started
-                answer_parts.append(token)
-                yield f'event: token\ndata: {json.dumps({"text": token})}\n\n'
-            elif event == 'error':
-                failed = True
-                logger.error(
-                    'streaming chat failed provider=%s exception=%s',
-                    current_provider.name,
-                    type(value).__name__,
-                    exc_info=(type(value), value, value.__traceback__),
-                )
-                detail = public_provider_error(current_provider.name, value)
-                yield f'event: error\ndata: {json.dumps({"detail": detail})}\n\n'
-            elif event == 'done':
-                break
+        try:
+            while True:
+                try:
+                    event, value = output.get(timeout=settings.provider_stream_heartbeat_seconds)
+                except queue.Empty:
+                    yield ': keep-alive\n\n'
+                    continue
+                if event == 'token':
+                    token = str(value)
+                    if first_token is None:
+                        first_token = time.perf_counter() - started
+                    answer_parts.append(token)
+                    yield f'event: token\ndata: {json.dumps({"text": token})}\n\n'
+                elif event == 'error':
+                    failed = True
+                    record_generation_failure(
+                        current_provider.name,
+                        getattr(current_provider, 'model', ollama_client.chat_model),
+                        time.perf_counter() - started,
+                        value,
+                    )
+                    logger.error(
+                        'streaming chat failed provider=%s exception=%s',
+                        current_provider.name,
+                        type(value).__name__,
+                        exc_info=(type(value), value, value.__traceback__),
+                    )
+                    detail = public_provider_error(current_provider.name, value)
+                    yield f'event: error\ndata: {json.dumps({"detail": detail})}\n\n'
+                elif event == 'done':
+                    break
+        finally:
+            canceled.set()
 
         if not failed:
             elapsed = time.perf_counter() - started
@@ -392,6 +459,8 @@ def chat_stream(payload: ChatRequest):
                 getattr(current_provider, 'model', ollama_client.chat_model),
                 elapsed,
                 sum(len(value) for value in answer_parts),
+                response_id=getattr(current_provider, 'last_response_id', ''),
+                usage=getattr(current_provider, 'last_usage', {}),
             )
             yield f'event: done\ndata: {json.dumps({"elapsed_seconds": elapsed, "first_token_seconds": first_token, "characters": sum(len(value) for value in answer_parts)})}\n\n'
 
@@ -451,6 +520,20 @@ def revoke_synthetic_voice(delete_reference: bool = Query(default=True)):
     return revoke_voice(delete_reference=delete_reference)
 
 
+@app.post('/api/voice/cache/clear', response_model=GenericStatus)
+def clear_voice_cache():
+    try:
+        response = requests.post(
+            f'{settings.voice_bridge_url.rstrip("/")}/cache/clear',
+            headers=LOCAL_BRIDGE_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=503, detail='The local voice cache could not be cleared') from exc
+    return GenericStatus(status='cleared', detail='Prepared voice files were removed. Your voice reference remains ready.')
+
+
 @app.post('/api/voice/speak')
 async def speak(payload: TTSRequest, request: Request):
     if not payload.request_id:
@@ -494,29 +577,6 @@ async def speak(payload: TTSRequest, request: Request):
     return Response(audio, media_type=media_type, headers={'X-Voice-Provider': provider, 'Cache-Control': 'no-store'})
 
 
-@app.post('/api/voice/stream')
-def stream_voice(payload: TTSRequest):
-    try:
-        upstream, provider = open_synthesis_stream(payload.text, payload.speed, payload.request_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=503, detail='Voice provider is unavailable') from exc
-
-    def chunks():
-        try:
-            yield from upstream.iter_content(chunk_size=8 * 1024)
-        finally:
-            cancel_synthesis_stream(payload.request_id)
-            upstream.close()
-
-    return StreamingResponse(
-        chunks(),
-        media_type=upstream.headers.get('content-type', 'application/x-hia-audio-stream'),
-        headers={'X-Voice-Provider': provider, 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'},
-    )
-
-
 @app.post('/api/voice/cancel/{request_id}', response_model=GenericStatus)
 def cancel_voice(request_id: str):
     if not request_id or len(request_id) > 80 or not request_id.replace('-', '').replace('_', '').isalnum():
@@ -547,7 +607,7 @@ def update_transcript(session_id: str, payload: TranscriptUpdate):
         session = safe_session_dir(session_id)
         with session_lock(session_id):
             revision = revise_transcript(session, payload.transcript, payload.reason)
-        return {'status': 'ok', 'session_id': session_id, 'revision_path': str(revision)}
+        return {'status': 'ok', 'session_id': session_id, 'revision_id': revision.stem}
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -557,8 +617,8 @@ def archive(session_id: str, confirm: bool = Query(default=False)):
     if not confirm:
         raise HTTPException(status_code=400, detail='Set confirm=true to archive this session non-destructively')
     try:
-        destination = archive_session(session_id)
-        return {'status': 'archived', 'session_id': session_id, 'path': str(destination)}
+        archive_session(session_id)
+        return {'status': 'archived', 'session_id': session_id}
     except (FileNotFoundError, FileExistsError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

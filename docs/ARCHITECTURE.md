@@ -34,14 +34,15 @@ The root `Dockerfile`, `docker-compose.yml`, and `app/` define the active runtim
 
 - Session artifacts use temporary-file, fsync, and atomic replace semantics.
 - Per-session advisory locks prevent concurrent transcript/analysis mutation.
-- A single-worker durable job manager prevents conflicting jobs of the same mode.
+- A single-worker durable job manager plus cross-process advisory locks prevents conflicting jobs of the same mode.
 - The local MLX voice bridge accepts only one synthesis at a time. A sentence-foundry stage creates 15–30-word speech units; groups of up to four use MLX shared-reference batch generation with per-sequence text-length limits. The bridge reuses reference conditioning, stitches the units into one WAV, persists answer/voice/speed cache entries, and returns only the completed file to Safari. Request IDs, disconnect-aware cancellation, segment progress, busy age, and a 110-second watchdog prevent abandoned work from becoming an invisible stale lock.
-- Transcript edits preserve immutable prior revisions and mark analysis/index state stale.
-- Archive moves a session into `library/archive`; no delete endpoint exists.
-- Reconciliation reports mismatches without repairing them.
+- Transcript edits preserve immutable prior revisions and immediately make the prior vector version ineligible for retrieval.
+- Archive moves a session into `library/archive`. Its Chroma records are permanently retained but cannot be selected because the session is absent from the active manifest.
+- Chroma writes are append-only. Versioned vectors and artifacts are staged first; `active_content_version` is the final activation step.
+- Reconciliation checks filesystem state, artifact versions, and activated Chroma coverage without repairing or deleting anything.
 
 ## Trust boundaries
 
-The service is intended for localhost. Compose publishes only to `127.0.0.1`, trusted hosts and CORS are restricted, uploads are bounded, path traversal is rejected, and browser responses carry defensive headers. Authentication and encryption at rest remain future requirements before any network exposure.
+The service is intended for localhost. Compose publishes only to `127.0.0.1`, trusted hosts and CORS are restricted, cross-origin mutations are rejected, uploads are bounded by encoded size and decoded duration, production API documentation is disabled, and the read-only container runs as a non-root user. Authentication and encryption at rest remain requirements before any network exposure.
 
-Cloud is explicit and provider-selectable. A cloud request contains only the current question, selected context, and speaker instructions. API keys are sourced from environment variables or process memory and never persisted in experience preferences. Embeddings, recordings, transcription, and voice synthesis remain local when OpenAI is selected for Talk generation.
+Cloud is explicit and provider-selectable. A cloud request contains only the current question, selected context, speaker instructions, and a bounded derived speaking-style profile. API keys are sourced from environment variables, a protected file, or process memory and never persisted in experience preferences. Embeddings, recordings, transcription, and local voice synthesis remain local when OpenAI is selected for Talk generation.

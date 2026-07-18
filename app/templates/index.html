@@ -48,10 +48,11 @@
 
     <div class="scene-stack">
       <section id="talk-scene" class="scene active" data-scene-panel="talk" aria-labelledby="talk-title">
-        <h2 id="talk-title" class="sr-only">Talk</h2>
+        <h2 id="talk-title" class="sr-only" tabindex="-1">Talk</h2>
         <div id="talk-provider-badge" class="talk-provider-badge" role="status" aria-label="Selected answer engine">Best answer · OpenAI</div>
         <div id="answer-card" class="answer-card" hidden>
-          <div id="answer-text" class="answer-text" aria-live="polite"></div>
+          <div id="answer-text" class="answer-text"></div>
+          <p id="answer-announcement" class="sr-only" role="status" aria-live="polite"></p>
           <div class="answer-actions">
             <button id="speak-answer" class="round-action" type="button" aria-label="Play this answer" disabled><span aria-hidden="true">▶</span><span>Play</span></button>
             <button id="stop-speaking" class="round-action" type="button" aria-label="Stop speaking" hidden><span aria-hidden="true">■</span><span>Stop</span></button>
@@ -80,9 +81,9 @@
       <section id="remember-scene" class="scene" data-scene-panel="remember" aria-labelledby="remember-title" hidden>
         <div class="scene-card recording-card">
           <p class="scene-kicker">Add to your story</p>
-          <h2 id="remember-title">What would you like to remember?</h2>
+          <h2 id="remember-title" tabindex="-1">What would you like to remember?</h2>
           <label class="floating-field" for="record-title"><span>Give this memory a name</span><input id="record-title" maxlength="160" placeholder="A summer afternoon…" /></label>
-          <canvas id="record-wave" width="700" height="110" aria-label="Live recording waveform"></canvas>
+          <canvas id="record-wave" width="700" height="110" role="img" aria-label="Live recording waveform. Recording status is described below."></canvas>
           <div id="record-time" class="record-time">00:00</div>
           <div class="record-controls">
             <button id="record-start" class="record-orb" type="button"><span class="record-dot" aria-hidden="true"></span><span>Record</span></button>
@@ -95,7 +96,7 @@
 
       <section id="memories-scene" class="scene" data-scene-panel="memories" aria-labelledby="memories-title" hidden>
         <div class="memory-heading">
-          <div><p class="scene-kicker">Your story</p><h2 id="memories-title">Memories</h2></div>
+          <div><p class="scene-kicker">Your story</p><h2 id="memories-title" tabindex="-1">Memories</h2></div>
           <label class="search-memory"><span class="sr-only">Search memories</span><input id="memory-search" type="search" placeholder="Find a memory…" /></label>
         </div>
         <section id="memory-queue" class="memory-queue" aria-labelledby="memory-queue-title" hidden>
@@ -108,7 +109,7 @@
           </div>
           <button id="memory-batch-open" class="primary-wide" type="button">Prepare all memories</button>
         </section>
-        <section id="memory-import" class="memory-import" aria-labelledby="memory-import-title" tabindex="0">
+        <section id="memory-import" class="memory-import" aria-labelledby="memory-import-title">
           <div class="import-sound" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
           <div class="import-copy">
             <p class="scene-kicker">Bring in a recording</p>
@@ -161,17 +162,18 @@
           <label id="cloud-key-label">Cloud API key<input id="setting-cloud-key" type="password" autocomplete="off" placeholder="Kept only until restart" /></label>
           <p id="provider-readiness" class="provider-readiness" role="status"></p>
           <p id="provider-note" class="setting-note"></p>
-          <p class="setting-note">The app never switches answer engines automatically. Embeddings and voice remain local in both modes.</p>
+          <p class="setting-note">The app never switches answer engines automatically. Embeddings and voice remain local in both modes. OpenAI receives only the current question, selected excerpts, and a short derived speaking-style profile.</p>
         </section>
         <section><h3>Voice</h3>
           <p id="voice-setting-status" class="setting-note">Checking voice…</p>
           <label class="switch"><input id="setting-pre-render-voice" type="checkbox"/><span></span>Prepare voice while I read</label>
           <button id="voice-setup-button" class="wide-button" type="button">Set up my voice</button>
+          <button id="voice-cache-clear" class="text-button" type="button">Clear prepared voice files</button>
           <button id="voice-revoke-button" class="text-button danger" type="button" hidden>Turn off and remove AI voice</button>
         </section>
         <section><h3>Care and maintenance</h3>
           <button id="reconcile-run" class="wide-button" type="button">Check my memories</button>
-          <button id="backup-create" class="wide-button" type="button">Make a safety copy</button>
+          <button id="backup-create" class="wide-button" type="button">Make a full safety copy</button>
           <details><summary>Technical activity</summary><div id="technical-status"></div><button id="warm-model" type="button" class="text-button">Warm local AI</button></details>
         </section>
       </div>
@@ -247,6 +249,7 @@
     </div>
   </dialog>
 
+  <script src="/static/app-core.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

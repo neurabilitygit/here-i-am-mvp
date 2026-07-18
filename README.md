@@ -7,7 +7,7 @@ A local-first autobiography system for recording, transcribing, structuring, ret
 - `app/` is the only active application implementation.
 - `backend/`, `frontend/`, `worker/`, and `app/app/` are retained legacy prototypes and are not part of the root Docker build.
 - Files under `library/sessions/` are the durable source of truth.
-- Chroma is a derived retrieval index and can be rebuilt into a side-by-side collection.
+- Chroma is append-only: revisions and archives preserve every historical vector. Retrieval uses the active filesystem version manifest so only the current, non-archived version can answer.
 - Background-job state is persisted as JSON and interrupted work becomes safely retryable after restart.
 
 See [Architecture](docs/ARCHITECTURE.md), [Data contracts](docs/DATA_CONTRACTS.md), [Operations](docs/OPERATIONS.md), and [migration notes](docs/REFACTOR_MIGRATION.md).
@@ -56,7 +56,7 @@ python3 -m uvicorn scripts.ollama_control_bridge:app --host 127.0.0.1 --port 877
 - Explicit batch preparation using local `gemma4:e4b` analysis plus `embeddinggemma`; OpenAI is never used for embeddings
 - Visual memory gallery with transcript review and revision history
 - Read-only reconciliation report
-- Per-session ZIP export and structured checksum backups
+- Per-session ZIP export and full rebuildable checksum backups, including original recordings and an append-only Chroma export
 - Streamed personal/general/hybrid chat with source memories and answer feedback
 - Quantitative vocabulary, rhythm, phrase, and audio-pace fingerprinting
 - Optional OpenAI-compatible cloud generation with explicit disclosure and session-only key handling

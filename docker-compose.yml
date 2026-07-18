@@ -16,6 +16,7 @@ services:
       JOBS_DIR: /data/appdata/jobs
       LOCKS_DIR: /data/appdata/locks
       EXPORTS_DIR: /data/appdata/exports
+      BACKUP_ROOT: ${BACKUP_ROOT:-/data/appdata/backups}
       ARCHIVE_DIR: /data/library/archive
       PREFERENCES_PATH: /data/appdata/preferences.json
       FIDELITY_PROFILE_PATH: /data/appdata/speaker_fingerprint.json
@@ -26,6 +27,7 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_CONTROL_URL: http://host.docker.internal:8778
       VOICE_BRIDGE_URL: http://host.docker.internal:8779
+      LOCAL_BRIDGE_TOKEN: ${LOCAL_BRIDGE_TOKEN:-here-i-am-local-v1}
       VOICE_HOST_DATA_ROOT: /Volumes/Personal/here-i-am
       OLLAMA_CHAT_MODEL: gemma4:e4b
       OLLAMA_ANALYSIS_MODEL: gemma4:e4b
@@ -35,7 +37,7 @@ services:
       OLLAMA_ANALYSIS_MAX_TOKENS: 3072
       TEXT_PROVIDER: ${TEXT_PROVIDER:-local}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+      OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-/run/secrets/openai_api_key}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
       ALLOWED_OPENAI_MODELS: ${ALLOWED_OPENAI_MODELS:-gpt-5.4-mini,gpt-5.4}
       ALLOW_RUNTIME_CLOUD_KEY: ${ALLOW_RUNTIME_CLOUD_KEY:-false}
@@ -46,6 +48,8 @@ services:
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
       WHISPER_MODEL: base
+      MAX_UPLOAD_SECONDS: 14400
+      API_DOCS_ENABLED: "false"
       CHUNK_SIZE_CHARS: 1200
       CHUNK_OVERLAP_CHARS: 200
       CHUNK_SIZE_WORDS: 220
@@ -61,6 +65,7 @@ services:
       CORS_ORIGINS: http://localhost:8787,http://127.0.0.1:8787
     volumes:
       - /Volumes/Personal/here-i-am:/data
+      - ${OPENAI_API_KEY_HOST_FILE:-/dev/null}:/run/secrets/openai_api_key:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     cap_drop:

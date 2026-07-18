@@ -8,12 +8,20 @@ import time
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 PID_FILE = Path(os.environ.get('OLLAMA_PID_FILE', '/Volumes/Personal/here-i-am/run/ollama.pid'))
 OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://127.0.0.1:11434')
 app = FastAPI(title='Ollama Control Bridge')
+LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', 'here-i-am-local-v1')
+
+
+@app.middleware('http')
+async def protect_mutations(request: Request, call_next):
+    if request.method != 'GET' and request.headers.get('X-Here-I-Am-Local') != LOCAL_BRIDGE_TOKEN:
+        return JSONResponse(status_code=403, content={'detail': 'Local bridge authorization is required'})
+    return await call_next(request)
 
 
 def is_port_open(host: str = '127.0.0.1', port: int = 11434) -> bool:

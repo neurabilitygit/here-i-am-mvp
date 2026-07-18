@@ -10,6 +10,9 @@ def test_jobs_are_persisted_and_duplicate_modes_are_blocked():
     job = manager.create('synthetic', 'queued')
     with pytest.raises(JobConflictError):
         manager.create('synthetic', 'duplicate')
+    second_manager = JobManager()
+    with pytest.raises(JobConflictError):
+        second_manager.create('synthetic', 'cross-process duplicate')
     manager.run_in_thread(job.id, lambda: manager.update(job.id, status='done', completed=True))
     for _ in range(50):
         if manager.get(job.id).completed:

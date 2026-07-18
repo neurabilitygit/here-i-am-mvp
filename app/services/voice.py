@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from services.storage import atomic_write_text, list_session_dirs, safe_session_
 STATUS_PATH = Path(settings.voice_dir) / 'voice_status.json'
 REFERENCE_PATH = Path(settings.voice_dir) / 'voice_reference.wav'
 REFERENCE_TEXT_PATH = Path(settings.voice_dir) / 'voice_reference.txt'
+LOCAL_BRIDGE_HEADERS = {'X-Here-I-Am-Local': settings.local_bridge_token}
 
 
 def _duration(path: Path) -> float:
@@ -34,6 +36,27 @@ def _transcript_words(path: Path) -> int:
     if not path.exists():
         return 0
     return len(path.read_text(encoding='utf-8').split())
+
+
+def _reference_duration_at_pause(source: Path, start: float, requested: float, source_duration: float) -> float:
+    """Move the reference ending onto a nearby silence instead of cutting a word."""
+    window = min(max(0.0, source_duration - start), requested + 5.0)
+    if window <= 0:
+        return requested
+    command = [
+        'ffmpeg', '-hide_banner', '-nostats', '-ss', str(start), '-t', str(window),
+        '-i', str(source), '-af', 'silencedetect=noise=-38dB:d=0.18', '-f', 'null', '-',
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        return requested
+    silence_starts = [float(value) for value in re.findall(r'silence_start:\s*([0-9.]+)', completed.stderr)]
+    minimum = max(5.0, requested * 0.55)
+    candidates = [value for value in silence_starts if minimum <= value <= window - 0.1]
+    if not candidates:
+        return requested
+    return round(min(candidates, key=lambda value: abs(value - requested)) + 0.06, 3)
 
 
 def list_voice_candidates(limit: int = 12) -> list[VoiceCandidate]:
@@ -100,9 +123,15 @@ def prepare_voice_reference(request: VoicePrepareRequest) -> VoiceStatus:
     source_duration = _duration(paths['audio'])
     if request.reference_start_seconds + request.reference_duration_seconds > source_duration:
         raise ValueError('The requested reference segment extends beyond the recording')
+    reference_duration = _reference_duration_at_pause(
+        paths['audio'],
+        request.reference_start_seconds,
+        request.reference_duration_seconds,
+        source_duration,
+    )
     Path(settings.voice_dir).mkdir(parents=True, exist_ok=True)
     command = [
-        'ffmpeg', '-y', '-ss', str(request.reference_start_seconds), '-t', str(request.reference_duration_seconds),
+        'ffmpeg', '-y', '-ss', str(request.reference_start_seconds), '-t', str(reference_duration),
         '-i', str(paths['audio']), '-ac', '1', '-ar', '24000',
         '-af', 'highpass=f=70,lowpass=f=11000,loudnorm=I=-18:TP=-2:LRA=7', str(REFERENCE_PATH),
     ]
@@ -126,7 +155,7 @@ def prepare_voice_reference(request: VoicePrepareRequest) -> VoiceStatus:
         consented_at=now,
         reference_ready=True,
         reference_session_id=request.session_id,
-        reference_seconds=request.reference_duration_seconds,
+        reference_seconds=reference_duration,
     )
     extra = {}
     if request.provider == 'elevenlabs':
@@ -149,13 +178,34 @@ def prepare_voice_reference(request: VoicePrepareRequest) -> VoiceStatus:
 
 def revoke_voice(delete_reference: bool = True) -> VoiceStatus:
     status = load_voice_status()
+    raw_status = json.loads(STATUS_PATH.read_text(encoding='utf-8')) if STATUS_PATH.exists() else {}
+    voice_id = raw_status.get('voice_id') or settings.elevenlabs_voice_id
+    cloud_deletion_pending = False
+    cloud_deletion_error = ''
+    if status.provider == 'elevenlabs' and voice_id and settings.elevenlabs_api_key:
+        try:
+            response = requests.delete(
+                f'https://api.elevenlabs.io/v1/voices/{voice_id}',
+                headers={'xi-api-key': settings.elevenlabs_api_key},
+                timeout=30,
+            )
+            if response.status_code != 404:
+                response.raise_for_status()
+            voice_id = ''
+        except requests.RequestException:
+            cloud_deletion_pending = True
+            cloud_deletion_error = 'Remote voice deletion must be retried.'
     status.enabled = False
     status.consented = False
     status.revoked_at = datetime.now(timezone.utc)
     if delete_reference:
         REFERENCE_PATH.unlink(missing_ok=True)
         REFERENCE_TEXT_PATH.unlink(missing_ok=True)
-    _save_status(status)
+    _save_status(status, {
+        'voice_id': voice_id,
+        'cloud_deletion_pending': cloud_deletion_pending,
+        'cloud_deletion_error': cloud_deletion_error,
+    })
     return load_voice_status()
 
 
@@ -187,6 +237,7 @@ def synthesize(text: str, speed: float = 1.0, request_id: str = '') -> tuple[byt
     host_reference = str(Path(settings.voice_host_data_root) / 'appdata' / 'voice' / REFERENCE_PATH.name)
     response = requests.post(
         f'{settings.voice_bridge_url.rstrip("/")}/synthesize',
+        headers=LOCAL_BRIDGE_HEADERS,
         json={
             'text': text,
             'reference_audio': host_reference,
@@ -230,44 +281,13 @@ def _release_local_chat_model() -> None:
         pass
 
 
-def open_synthesis_stream(text: str, speed: float = 1.0, request_id: str = '') -> tuple[requests.Response, str]:
-    status = load_voice_status()
-    if not status.enabled or not status.consented:
-        raise RuntimeError('Voice synthesis is not enabled and consented')
-    if status.provider == 'elevenlabs':
-        raise RuntimeError('Streaming playback currently requires the local cloned voice')
-
-    _release_local_chat_model()
-    host_reference = str(Path(settings.voice_host_data_root) / 'appdata' / 'voice' / REFERENCE_PATH.name)
-    response = requests.post(
-        f'{settings.voice_bridge_url.rstrip("/")}/stream',
-        json={
-            'text': text,
-            'reference_audio': host_reference,
-            'reference_text': REFERENCE_TEXT_PATH.read_text(encoding='utf-8') if REFERENCE_TEXT_PATH.exists() else '',
-            'speed': speed,
-            'request_id': request_id,
-        },
-        stream=True,
-        timeout=(5, settings.voice_request_timeout_seconds),
-    )
-    if response.status_code == 409:
-        try:
-            detail = response.json().get('detail', 'The local voice is already preparing another answer')
-        except ValueError:
-            detail = 'The local voice is already preparing another answer'
-        response.close()
-        raise RuntimeError(detail)
-    response.raise_for_status()
-    return response, 'local'
-
-
 def cancel_synthesis_stream(request_id: str) -> bool:
     if not request_id:
         return False
     try:
         response = requests.post(
             f'{settings.voice_bridge_url.rstrip("/")}/cancel/{request_id}',
+            headers=LOCAL_BRIDGE_HEADERS,
             timeout=2,
         )
         return response.ok and response.json().get('status') == 'canceling'

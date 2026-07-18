@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import chromadb
+from chromadb.config import Settings as ChromaSettings
 from faster_whisper import WhisperModel
 from chromadb.api.types import EmbeddingFunction
 
@@ -15,7 +17,7 @@ from config import settings
 from models.schemas import BenchmarkAnswer, ChatBenchmarkResponse, ChatResponse, ChatSource, TranscriptMetadata
 from services.jobs import job_manager
 from services.ollama_client import ollama_client
-from services.fidelity import fingerprint_prompt
+from services.fidelity import build_speaker_fingerprint, fingerprint_prompt
 from services.preferences import load_preferences
 from services.providers import active_provider, provider_for
 from services.storage import (
@@ -62,13 +64,21 @@ def whisper_model():
 def chroma_collection(name: str | None = None):
     global _chroma_client
     if _chroma_client is None:
-        _chroma_client = chromadb.PersistentClient(path=settings.chroma_dir)
+        _chroma_client = chromadb.PersistentClient(
+            path=settings.chroma_dir,
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
     collection_name = name or settings.chroma_collection
     if collection_name not in _collections:
         _collections[collection_name] = _chroma_client.get_or_create_collection(
             name=collection_name,
             embedding_function=OllamaEmbeddingFunction(),
-            metadata={"description": "Transcript chunks for Here I Am"},
+            metadata={
+                "description": "Append-only transcript chunks for Here I Am",
+                "embedding_model": settings.ollama_embedding_model,
+                "chunk_schema_version": settings.metadata_version,
+                "append_only": True,
+            },
         )
     return _collections[collection_name]
 
@@ -84,6 +94,74 @@ def normalize_chroma_value(value):
 def transcript_plain_text(path: Path) -> str:
     text = path.read_text(encoding="utf-8")
     return "\n".join(line for line in text.splitlines() if not line.startswith("# ")).strip()
+
+
+def content_version_for(transcript: str) -> str:
+    """Identify one immutable, reproducible vectorization of a transcript."""
+    material = json.dumps(
+        {
+            'transcript': transcript,
+            'metadata_version': settings.metadata_version,
+            'embedding_model': settings.ollama_embedding_model,
+            'chunk_size_words': settings.chunk_size_words,
+            'chunk_overlap_words': settings.chunk_overlap_words,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode('utf-8')).hexdigest()[:20]
+
+
+def active_index_versions() -> dict[str, str]:
+    """Return the only session versions eligible for retrieval.
+
+    Chroma is append-only. The filesystem state is the activation manifest, so
+    archived sessions disappear from this map and stale revisions remain
+    unavailable until their new version is fully prepared.
+    """
+    active: dict[str, str] = {}
+    for session in list_session_dirs():
+        state_path = session_paths(session)['state']
+        if not state_path.exists():
+            continue
+        try:
+            state = load_json(state_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not state.get('embedded', False):
+            continue
+        active[session.name] = str(state.get('active_content_version') or 'legacy')
+    return active
+
+
+def record_is_active(metadata: dict, active_versions: dict[str, str]) -> bool:
+    session_id = str(metadata.get('session_id', ''))
+    expected = active_versions.get(session_id)
+    if expected is None:
+        return False
+    actual = str(metadata.get('content_version') or 'legacy')
+    return actual == expected
+
+
+def active_chroma_filter(active_versions: dict[str, str]) -> dict | None:
+    """Build a server-side Chroma filter once every active record is versioned.
+
+    Legacy records did not store a content-version field, so installations that
+    still have an active legacy session safely fall back to post-filtering until
+    that session is prepared under the append-only versioned schema.
+    """
+    if not active_versions or 'legacy' in active_versions.values():
+        return None
+    clauses = [
+        {
+            '$and': [
+                {'session_id': {'$eq': session_id}},
+                {'content_version': {'$eq': version}},
+            ],
+        }
+        for session_id, version in sorted(active_versions.items())
+    ]
+    return clauses[0] if len(clauses) == 1 else {'$or': clauses}
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -260,6 +338,42 @@ def save_voice_profile(profile: dict) -> None:
     atomic_write_text(VOICE_PROFILE_PATH, json.dumps(profile, ensure_ascii=False, indent=2))
 
 
+def rebuild_voice_profile() -> dict:
+    """Rebuild derived style evidence from currently active session metadata."""
+    profile = {
+        "profile_version": "2.0",
+        "sessions_analyzed": 0,
+        "sentence_rhythm": [],
+        "vocabulary_style": [],
+        "rhetorical_habits": [],
+        "emotional_register": [],
+        "pacing_style": [],
+        "humor_style": [],
+        "certainty_style": [],
+        "storytelling_style": [],
+        "values_signals": [],
+        "recurring_concerns": [],
+        "conversational_stance": [],
+        "prosody_notes": [],
+        "favorite_phrases": [],
+        "style_exemplars": [],
+        "analyzed_session_ids": [],
+        "last_updated_session_id": None,
+    }
+    for session in list_session_dirs():
+        paths = session_paths(session)
+        try:
+            state = load_json(paths['state'])
+            if not state.get('embedded', False) or not paths['metadata'].exists():
+                continue
+            metadata = load_json(paths['metadata'])
+        except (OSError, json.JSONDecodeError):
+            continue
+        profile = merge_voice_profile(profile, metadata, session.name)
+    save_voice_profile(profile)
+    return profile
+
+
 def voice_profile_text() -> str:
     profile = load_voice_profile()
     lines = []
@@ -421,6 +535,10 @@ def analyze_unprocessed(job_id: str, *, finalize: bool = True) -> tuple[int, int
         processed += 1
         embedded_chunks += chunk_count
 
+    if processed:
+        rebuild_voice_profile()
+        build_speaker_fingerprint()
+
     if finalize:
         job_manager.update(
             job_id,
@@ -487,31 +605,41 @@ def _analyze_session(job_id: str, session: Path, processed: int) -> int:
         processed=processed,
     )
 
-    metadata_generated = not paths['metadata'].exists()
+    prior_state = load_json(paths['state']) if paths['state'].exists() else {}
+    metadata_generated = (
+        not paths['metadata'].exists()
+        or not prior_state.get('analyzed', False)
+        or prior_state.get('analysis_status') == 'stale'
+    )
     t0 = time.time()
     metadata = generate_metadata(session.name, transcript) if metadata_generated else load_json(paths['metadata'])
     metadata["audio_path"] = str(paths["audio"])
     metadata["transcript_path"] = str(paths["transcript"])
     print(f"[TIMING] analysis_generate session={session.name} elapsed={time.time()-t0:.2f}s")
-    chunk_records = build_chunk_records(session.name, transcript, metadata)
+    content_version = content_version_for(transcript)
+    metadata['content_version'] = content_version
+    chunk_records = build_chunk_records(session.name, transcript, metadata, content_version=content_version)
     ids = [record['id'] for record in chunk_records]
 
     if ids:
-        collection.delete(where={"session_id": session.name})
-        collection.add(
-            ids=ids,
-            documents=[record['text'] for record in chunk_records],
-            metadatas=[record['metadata'] for record in chunk_records],
-        )
+        existing = set(collection.get(ids=ids).get('ids', []))
+        missing_indexes = [index for index, identifier in enumerate(ids) if identifier not in existing]
+        if missing_indexes:
+            collection.add(
+                ids=[ids[index] for index in missing_indexes],
+                documents=[chunk_records[index]['text'] for index in missing_indexes],
+                metadatas=[chunk_records[index]['metadata'] for index in missing_indexes],
+            )
 
+    # Durable version artifacts are written before the one-field activation
+    # manifest changes. A crash can leave an unreferenced staged version, but it
+    # can never make a partial version retrievable or erase the prior vectors.
+    version_root = session / 'versions' / content_version
     atomic_write_text(
-        paths['chunks'],
+        version_root / 'chunks.jsonl',
         ''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in chunk_records),
     )
-    if metadata_generated:
-        save_json(paths['metadata'], metadata)
-        profile = merge_voice_profile(load_voice_profile(), metadata, session.name)
-        save_voice_profile(profile)
+    save_json(version_root / 'metadata.json', metadata)
 
     update_processing_state(
         session,
@@ -519,7 +647,16 @@ def _analyze_session(job_id: str, session: Path, processed: int) -> int:
         embedded=True,
         analysis_status='complete',
         embedding_status='complete',
+        active_content_version=content_version,
+        embedding_model=settings.ollama_embedding_model,
+        chunk_schema_version=settings.metadata_version,
     )
+
+    atomic_write_text(
+        paths['chunks'],
+        ''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in chunk_records),
+    )
+    save_json(paths['metadata'], metadata)
     job_manager.update(
         job_id,
         current_file=paths["transcript"].name,
@@ -529,7 +666,13 @@ def _analyze_session(job_id: str, session: Path, processed: int) -> int:
     return len(ids)
 
 
-def build_chunk_records(session_id: str, transcript: str, metadata: dict) -> list[dict]:
+def build_chunk_records(
+    session_id: str,
+    transcript: str,
+    metadata: dict,
+    *,
+    content_version: str | None = None,
+) -> list[dict]:
     records = []
     for index, chunk in enumerate(semantic_chunks(transcript)):
         chunk_meta = {
@@ -546,8 +689,14 @@ def build_chunk_records(session_id: str, transcript: str, metadata: dict) -> lis
             "rhetorical_habits": normalize_chroma_value((metadata.get("style_profile", {}) or {}).get("rhetorical_habits", "")),
             "conversational_stance": normalize_chroma_value((metadata.get("style_profile", {}) or {}).get("conversational_stance", "")),
             "schema_version": settings.metadata_version,
+            "content_version": content_version or 'legacy',
         }
-        records.append({"id": f"{session_id}::chunk::{index:04d}", "text": chunk, "metadata": chunk_meta})
+        identifier = (
+            f"{session_id}::version::{content_version}::chunk::{index:04d}"
+            if content_version
+            else f"{session_id}::chunk::{index:04d}"
+        )
+        records.append({"id": identifier, "text": chunk, "metadata": chunk_meta})
     return records
 
 
@@ -565,14 +714,19 @@ def reindex_to_migration_collection(job_id: str) -> None:
             'summary': '',
             'topics': [],
         }
-        records = build_chunk_records(session.name, transcript, metadata)
-        target.delete(where={'session_id': session.name})
+        content_version = content_version_for(transcript)
+        metadata['content_version'] = content_version
+        records = build_chunk_records(session.name, transcript, metadata, content_version=content_version)
         if records:
-            target.add(
-                ids=[record['id'] for record in records],
-                documents=[record['text'] for record in records],
-                metadatas=[record['metadata'] for record in records],
-            )
+            ids = [record['id'] for record in records]
+            existing = set(target.get(ids=ids).get('ids', []))
+            missing = [record for record in records if record['id'] not in existing]
+            if missing:
+                target.add(
+                    ids=[record['id'] for record in missing],
+                    documents=[record['text'] for record in missing],
+                    metadatas=[record['metadata'] for record in missing],
+                )
         embedded += len(records)
         job_manager.update(
             job_id,
@@ -680,16 +834,33 @@ def query_context_with_distances(question: str, n_results: int | None = None) ->
     collection = chroma_collection()
     if collection.count() == 0:
         return [], [], []
+    active_versions = active_index_versions()
+    if not active_versions:
+        return [], [], []
     seed_count = n_results or settings.retrieval_seed_chunks
     candidate_count = seed_count if n_results is not None else max(seed_count, settings.retrieval_candidate_chunks)
+    where = active_chroma_filter(active_versions)
+    query_arguments = {
+        'query_texts': [question],
+        'n_results': candidate_count if where is not None else collection.count(),
+        'include': ['documents', 'metadatas', 'distances'],
+    }
+    if where is not None:
+        query_arguments['where'] = where
     results = collection.query(
-        query_texts=[question],
-        n_results=min(candidate_count, collection.count()),
-        include=['documents', 'metadatas', 'distances'],
+        **query_arguments,
     )
     docs = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
     distances = results.get('distances', [[]])[0]
+    active_results = [
+        (doc, meta, distance)
+        for doc, meta, distance in zip(docs, metadatas, distances)
+        if record_is_active(meta, active_versions)
+    ][:candidate_count]
+    docs = [item[0] for item in active_results]
+    metadatas = [item[1] for item in active_results]
+    distances = [item[2] for item in active_results]
     if settings.retrieval_max_distance is not None:
         accepted = [
             (doc, meta, distance)
@@ -738,9 +909,14 @@ def query_context_with_distances(question: str, n_results: int | None = None) ->
             return chunk_cache[session_id]
         records: dict[int, dict] = {}
         try:
-            path = session_paths(safe_session_dir(session_id))['chunks']
+            session = safe_session_dir(session_id)
+            expected = active_versions.get(session_id)
+            versioned = session / 'versions' / str(expected) / 'chunks.jsonl'
+            path = versioned if expected and expected != 'legacy' and versioned.exists() else session_paths(session)['chunks']
             for line in path.read_text(encoding='utf-8').splitlines():
                 value = json.loads(line)
+                if not record_is_active(dict(value.get('metadata') or {}), active_versions):
+                    continue
                 index = int((value.get('metadata') or {}).get('chunk_index', -1))
                 if index >= 0:
                     records[index] = value
@@ -937,9 +1113,15 @@ def lexical_personal_context(question: str, limit: int = 2) -> tuple[list[str], 
         return [], [], []
 
     candidates: list[tuple[float, str, dict]] = []
+    active_versions = active_index_versions()
     for session_dir in list_session_dirs():
+        expected = active_versions.get(session_dir.name)
+        if expected is None:
+            continue
         try:
-            lines = session_paths(session_dir)['chunks'].read_text(encoding='utf-8').splitlines()
+            versioned = session_dir / 'versions' / str(expected) / 'chunks.jsonl'
+            path = versioned if expected != 'legacy' and versioned.exists() else session_paths(session_dir)['chunks']
+            lines = path.read_text(encoding='utf-8').splitlines()
         except OSError:
             continue
         for line in lines:
@@ -949,6 +1131,8 @@ def lexical_personal_context(question: str, limit: int = 2) -> tuple[list[str], 
                 continue
             text = str(record.get('text', '')).strip()
             metadata = dict(record.get('metadata') or {})
+            if not record_is_active(metadata, active_versions):
+                continue
             evidence_text = ' '.join((
                 text,
                 str(metadata.get('title', '')),

@@ -59,7 +59,7 @@ Do not pad the answer, repeat the same fact, or invent connective details. If th
         started = time.perf_counter()
         text = ollama_client.chat(self._prompt(prompt), json_mode=json_mode)
         result = GenerationResult(text=text, provider=self.name, model=ollama_client.chat_model, elapsed_seconds=time.perf_counter() - started)
-        _append_audit({'provider': result.provider, 'model': result.model, 'elapsed_seconds': result.elapsed_seconds, 'characters': len(text), 'streamed': False})
+        _append_audit({'provider': result.provider, 'model': result.model, 'elapsed_seconds': result.elapsed_seconds, 'characters': len(text), 'streamed': False, 'outcome': 'success'})
         return result
 
     def stream(self, prompt: str) -> Iterator[str]:
@@ -71,6 +71,8 @@ class OpenAIProvider:
 
     def __init__(self, model: str):
         self.model = model
+        self.last_usage: dict = {}
+        self.last_response_id = ''
 
     def _headers(self) -> dict[str, str]:
         key, _source = cloud_api_key()
@@ -102,6 +104,7 @@ class OpenAIProvider:
         )
         response.raise_for_status()
         body = response.json()
+        usage = body.get('usage') or {}
         text = body.get('output_text') or ''.join(
             item.get('text', '')
             for output in body.get('output', [])
@@ -109,7 +112,17 @@ class OpenAIProvider:
             if item.get('type') == 'output_text'
         )
         result = GenerationResult(text=text.strip(), provider=self.name, model=self.model, elapsed_seconds=time.perf_counter() - started)
-        _append_audit({'provider': result.provider, 'model': result.model, 'elapsed_seconds': result.elapsed_seconds, 'characters': len(result.text), 'streamed': False})
+        _append_audit({
+            'provider': result.provider,
+            'model': result.model,
+            'elapsed_seconds': result.elapsed_seconds,
+            'characters': len(result.text),
+            'streamed': False,
+            'outcome': 'success',
+            'response_id': str(body.get('id') or ''),
+            'input_tokens': usage.get('input_tokens'),
+            'output_tokens': usage.get('output_tokens'),
+        })
         return result
 
     def stream(self, prompt: str) -> Iterator[str]:
@@ -135,6 +148,10 @@ class OpenAIProvider:
                     delta = event.get('delta', '')
                     if delta:
                         yield delta
+                elif event.get('type') == 'response.completed':
+                    completed = event.get('response') or {}
+                    self.last_response_id = str(completed.get('id') or '')
+                    self.last_usage = completed.get('usage') or {}
 
 
 def provider_for(name: str, model: str | None = None):
@@ -192,13 +209,37 @@ def public_provider_error(provider: str, exc: Exception) -> str:
     return 'Local Gemma is unavailable. Start Ollama or select Best answer in Settings.'
 
 
-def record_stream_audit(provider: str, model: str, elapsed_seconds: float, characters: int) -> None:
+def record_stream_audit(
+    provider: str,
+    model: str,
+    elapsed_seconds: float,
+    characters: int,
+    *,
+    response_id: str = '',
+    usage: dict | None = None,
+) -> None:
+    usage = usage or {}
     _append_audit({
         'provider': provider,
         'model': model,
         'elapsed_seconds': elapsed_seconds,
         'characters': characters,
         'streamed': True,
+        'outcome': 'success',
+        'response_id': response_id,
+        'input_tokens': usage.get('input_tokens'),
+        'output_tokens': usage.get('output_tokens'),
+    })
+
+
+def record_generation_failure(provider: str, model: str, elapsed_seconds: float, exc: Exception) -> None:
+    _append_audit({
+        'provider': provider,
+        'model': model,
+        'elapsed_seconds': elapsed_seconds,
+        'streamed': False,
+        'outcome': 'failure',
+        'error_type': type(exc).__name__,
     })
 
 

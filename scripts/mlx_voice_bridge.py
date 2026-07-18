@@ -1,4 +1,4 @@
-"""Apple-Silicon-native streaming Qwen3-TTS voice-cloning bridge."""
+"""Apple-Silicon-native batch Qwen3-TTS voice-cloning bridge."""
 from __future__ import annotations
 
 import io
@@ -6,7 +6,6 @@ import hashlib
 import os
 import re
 import shutil
-import struct
 import threading
 import time
 import uuid
@@ -14,8 +13,8 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 
@@ -27,8 +26,11 @@ STREAMING_INTERVAL = float(os.environ.get('QWEN_TTS_STREAMING_INTERVAL', '0.8'))
 SENTENCE_BATCH_SIZE = max(2, min(4, int(os.environ.get('QWEN_TTS_SENTENCE_BATCH_SIZE', '2'))))
 WATCHDOG_SECONDS = max(30, min(120, int(os.environ.get('QWEN_TTS_WATCHDOG_SECONDS', '110'))))
 CACHE_LIMIT = max(8, int(os.environ.get('QWEN_TTS_CACHE_LIMIT', '96')))
+CACHE_MAX_BYTES = max(128 * 1024 * 1024, int(os.environ.get('QWEN_TTS_CACHE_MAX_BYTES', str(2 * 1024 * 1024 * 1024))))
+CACHE_DIR = os.environ.get('QWEN_TTS_CACHE_DIR', '')
 CACHE_SCHEMA_VERSION = 'sentence-foundry-v3-clean-boundaries'
 app = FastAPI(title='Here I Am MLX voice bridge')
+LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', 'here-i-am-local-v1')
 _model = None
 _model_lock = threading.Lock()
 _generation_lock = threading.Lock()
@@ -42,6 +44,15 @@ _active_segments_total = 0
 _active_segments_complete = 0
 _reference_cache_signature: tuple[str, int, int] | None = None
 _reference_cache_audio = None
+
+
+@app.middleware('http')
+async def protect_mutations(request: Request, call_next):
+    if request.method != 'GET' and request.headers.get('X-Here-I-Am-Local') != LOCAL_BRIDGE_TOKEN:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=403, content={'detail': 'Local bridge authorization is required'})
+    return await call_next(request)
 
 
 class SynthesisRequest(BaseModel):
@@ -60,19 +71,6 @@ def load_model():
 
             _model = mlx_load_model(MODEL_ID)
         return _model
-
-
-def generate(model, request: SynthesisRequest, *, stream: bool):
-    return model.generate(
-        text=request.text,
-        lang_code='English',
-        ref_audio=request.reference_audio,
-        ref_text=request.reference_text or None,
-        speed=request.speed,
-        stream=stream,
-        streaming_interval=STREAMING_INTERVAL,
-        verbose=False,
-    )
 
 
 def wav_bytes(audio, sample_rate: int) -> bytes:
@@ -190,7 +188,7 @@ def cache_key(request: SynthesisRequest) -> str:
 
 
 def cache_root(request: SynthesisRequest) -> Path:
-    root = Path(os.environ.get('QWEN_TTS_CACHE_DIR', str(Path(request.reference_audio).parent / 'cache')))
+    root = Path(CACHE_DIR or str(Path(request.reference_audio).parent / 'cache'))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -252,6 +250,24 @@ def trim_cache(root: Path) -> None:
         )
         for stale in directories[CACHE_LIMIT:]:
             shutil.rmtree(stale, ignore_errors=True)
+    retained = sorted(
+        (path for path in root.rglob('*') if path.is_file()),
+        key=lambda value: value.stat().st_mtime,
+        reverse=True,
+    )
+    total = 0
+    for path in retained:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        total += size
+        if total > CACHE_MAX_BYTES:
+            path.unlink(missing_ok=True)
+    if segment_root.exists():
+        for directory in sorted(segment_root.iterdir(), reverse=True):
+            if directory.is_dir() and not any(directory.iterdir()):
+                directory.rmdir()
 
 
 def cached_reference_audio(path: str, expected_sample_rate: int):
@@ -364,6 +380,7 @@ def health():
         'first_frame_ready': bool(first_frame_at),
         'watchdog_seconds': WATCHDOG_SECONDS,
         'sentence_batch_size': SENTENCE_BATCH_SIZE,
+        'cache_max_bytes': CACHE_MAX_BYTES,
         'active_cache_key': active_cache_key,
         'segments_total': segments_total,
         'segments_complete': segments_complete,
@@ -386,6 +403,21 @@ def warm():
         return {'status': 'ready', 'model': MODEL_ID}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post('/cache/clear')
+def clear_cache():
+    if not _generation_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail='Voice cache cannot be cleared while speech is being prepared')
+    try:
+        if not CACHE_DIR:
+            raise HTTPException(status_code=409, detail='Voice cache location is not configured')
+        root = Path(CACHE_DIR)
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+        return {'status': 'cleared'}
+    finally:
+        _generation_lock.release()
 
 
 def validate_reference(request: SynthesisRequest) -> None:
@@ -490,38 +522,3 @@ def synthesize(request: SynthesisRequest):
         raise HTTPException(status_code=503, detail=f'Local voice generation failed: {exc}') from exc
     finally:
         finish_generation(request_id)
-
-
-@app.post('/stream')
-def stream_synthesis(request: SynthesisRequest):
-    validate_reference(request)
-    generation = begin_generation(request.request_id, cache_key(request), len(speech_units(request.text)))
-    if generation is None:
-        raise HTTPException(status_code=409, detail='The local voice is already preparing another answer')
-    request_id, cancel_event = generation
-    try:
-        model = load_model()
-    except Exception as exc:
-        finish_generation(request_id)
-        raise HTTPException(status_code=503, detail=f'Local voice model failed to load: {exc}') from exc
-
-    def frames():
-        try:
-            for unit in speech_units(request.text):
-                if cancel_event.is_set():
-                    break
-                unit_request = request.model_copy(update={'text': unit})
-                for result in generate(model, unit_request, stream=True):
-                    if cancel_event.is_set():
-                        break
-                    mark_first_frame(request_id)
-                    payload = wav_bytes(result.audio, result.sample_rate)
-                    yield struct.pack('>I', len(payload)) + payload
-        finally:
-            finish_generation(request_id)
-
-    return StreamingResponse(
-        frames(),
-        media_type='application/x-hia-audio-stream',
-        headers={'X-Voice-Engine': 'qwen3-tts-mlx', 'Cache-Control': 'no-store'},
-    )

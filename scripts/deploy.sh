@@ -1,55 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-SRC="/Volumes/Personal/here-i-am-mvp"
-BUILD="/tmp/here-i-am-mvp-build"
-
-echo "==> Moving to repo"
-cd "$SRC"
-
-echo "==> Git status"
-git status --short || true
-
-if [ -n "$(git status --porcelain)" ]; then
-  echo "==> Uncommitted changes detected"
-  read -r -p "Enter commit message (or leave blank to skip commit): " COMMIT_MSG
-
-  if [ -n "${COMMIT_MSG}" ]; then
-    echo "==> Staging changes"
-    git add .
-
-    echo "==> Committing"
-    git commit -m "$COMMIT_MSG"
-
-    echo "==> Pushing to GitHub"
-    git push || echo "Git push failed. Continuing with local deploy."
-  else
-    echo "==> Skipping git commit and push"
-  fi
-else
-  echo "==> Working tree clean"
-  echo "==> Attempting git push"
-  git push || echo "Git push failed or nothing to push. Continuing with local deploy."
-fi
-
-echo "==> Preparing clean build folder"
-rm -rf "$BUILD"
-mkdir -p "$BUILD"
-
-echo "==> Syncing repo to build folder"
-rsync -av --delete \
-  --exclude '._*' \
-  --exclude '.DS_Store' \
-  --exclude '.git' \
-  --exclude 'venv' \
-  --exclude '__pycache__' \
-  --exclude '*.pyc' \
-  "$SRC"/ "$BUILD"/
-
-echo "==> Clearing macOS extended attributes"
-xattr -rc "$BUILD" || true
-
-echo "==> Rebuilding and restarting Docker app"
-cd "$BUILD"
-docker compose down
-docker compose up --build
+ROOT="${HERE_I_AM_SOURCE_DIR:-/Volumes/Personal/here-i-am-mvp}"
+cd "$ROOT"
+[[ -z "$(git status --porcelain)" ]] || { echo 'Deployment refused: commit or intentionally discard working changes first.' >&2; exit 1; }
+git fetch --prune origin
+git status -sb
+tmpdir="$(mktemp -d /tmp/here-i-am-release.XXXXXX)"
+trap 'rm -rf "$tmpdir"' EXIT
+rsync -a --exclude='.git' --exclude='._*' --exclude='.DS_Store' --exclude='__pycache__' ./ "$tmpdir/"
+docker build --target test -t here-i-am-release-test "$tmpdir"
+docker run --rm here-i-am-release-test
+"$ROOT/scripts/start.sh"

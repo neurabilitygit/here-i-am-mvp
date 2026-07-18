@@ -56,7 +56,7 @@ class OllamaClient:
 
     def start(self) -> dict[str, Any]:
         try:
-            resp = requests.post(f"{settings.ollama_control_url}/start", timeout=30)
+            resp = requests.post(f"{settings.ollama_control_url}/start", headers={'X-Here-I-Am-Local': settings.local_bridge_token}, timeout=30)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
@@ -64,7 +64,7 @@ class OllamaClient:
 
     def stop(self) -> dict[str, Any]:
         try:
-            resp = requests.post(f"{settings.ollama_control_url}/stop", timeout=30)
+            resp = requests.post(f"{settings.ollama_control_url}/stop", headers={'X-Here-I-Am-Local': settings.local_bridge_token}, timeout=30)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:

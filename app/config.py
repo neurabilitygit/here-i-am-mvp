@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     jobs_dir: str = '/data/appdata/jobs'
     locks_dir: str = '/data/appdata/locks'
     exports_dir: str = '/data/appdata/exports'
+    backup_root: str = '/data/appdata/backups'
     archive_dir: str = '/data/library/archive'
     preferences_path: str = '/data/appdata/preferences.json'
     fidelity_profile_path: str = '/data/appdata/speaker_fingerprint.json'
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     cloud_store_responses: bool = False
     voice_provider: str = 'disabled'
     voice_bridge_url: str = 'http://host.docker.internal:8779'
+    local_bridge_token: str = 'here-i-am-local-v1'
     voice_host_data_root: str = '/Volumes/Personal/here-i-am'
     elevenlabs_api_key: str = ''
     elevenlabs_voice_id: str = ''
@@ -66,6 +68,8 @@ class Settings(BaseSettings):
     metadata_version: str = '2.0'
     app_timezone: str = 'America/New_York'
     max_upload_bytes: int = 536_870_912
+    max_upload_seconds: int = 14_400
+    api_docs_enabled: bool = False
     cors_origins: str = 'http://localhost:8787,http://127.0.0.1:8787'
     trusted_hosts: str = 'localhost,127.0.0.1,testserver,host.docker.internal'
     log_level: str = 'INFO'

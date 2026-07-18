@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="/Volumes/Personal/here-i-am-mvp"
+export QWEN_TTS_CACHE_DIR="${QWEN_TTS_CACHE_DIR:-/Volumes/Personal/here-i-am/appdata/voice/cache}"
 # Keep executable packages on the Mac's native filesystem. External ExFAT
 # volumes can corrupt Python package metadata; recordings and derived voice
 # references remain in the configured application data directory.

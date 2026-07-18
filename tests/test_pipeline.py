@@ -1,4 +1,12 @@
-from services.pipeline import build_chunk_records, metadata_prompt, normalize_chroma_value, semantic_chunks
+from services.pipeline import (
+    build_chunk_records,
+    active_chroma_filter,
+    content_version_for,
+    metadata_prompt,
+    normalize_chroma_value,
+    record_is_active,
+    semantic_chunks,
+)
 
 
 def test_semantic_chunks_do_not_cut_words_and_overlap():
@@ -29,3 +37,30 @@ def test_chunk_records_have_deterministic_ids_and_schema_version():
     assert records[0]['id'] == 'session-1::chunk::0000'
     assert records[0]['metadata']['session_id'] == 'session-1'
     assert records[0]['metadata']['schema_version'] == '2.0'
+
+
+def test_versioned_chunk_ids_are_append_only_and_retrieval_uses_manifest():
+    transcript = 'A short memory about a summer afternoon.'
+    version = content_version_for(transcript)
+    records = build_chunk_records(
+        'session-1',
+        transcript,
+        {'title': 'Summer', 'summary': 'A memory', 'topics': ['summer']},
+        content_version=version,
+    )
+    assert records[0]['id'] == f'session-1::version::{version}::chunk::0000'
+    assert record_is_active(records[0]['metadata'], {'session-1': version}) is True
+    assert record_is_active(records[0]['metadata'], {'session-1': 'newer-version'}) is False
+    assert record_is_active(records[0]['metadata'], {}) is False
+
+
+def test_active_chroma_filter_uses_versioned_manifest_and_preserves_legacy_fallback():
+    assert active_chroma_filter({'old': 'legacy'}) is None
+    assert active_chroma_filter({}) is None
+    where = active_chroma_filter({'session-1': 'version-a'})
+    assert where == {
+        '$and': [
+            {'session_id': {'$eq': 'session-1'}},
+            {'content_version': {'$eq': 'version-a'}},
+        ],
+    }
