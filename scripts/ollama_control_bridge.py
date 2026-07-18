@@ -50,6 +50,11 @@ def write_pid(pid: int) -> None:
     PID_FILE.write_text(str(pid))
 
 
+@app.post('/auth/check')
+def auth_check():
+    return {'status': 'ok'}
+
+
 @app.get('/status')
 @app.get('/ollama/status', include_in_schema=False)
 def status():

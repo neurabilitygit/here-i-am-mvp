@@ -32,8 +32,8 @@ export LOCAL_BRIDGE_TOKEN
 
 bridge_token_works() {
   local url="$1" status
-  status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "X-Here-I-Am-Local: $LOCAL_BRIDGE_TOKEN" "$url/__auth_probe" 2>/dev/null || true)"
-  [[ "$status" == '404' ]]
+  status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "X-Here-I-Am-Local: $LOCAL_BRIDGE_TOKEN" "$url/auth/check" 2>/dev/null || true)"
+  [[ "$status" == '200' ]]
 }
 
 restart_stale_bridge() {

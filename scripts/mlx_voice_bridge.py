@@ -63,6 +63,11 @@ class SynthesisRequest(BaseModel):
     request_id: str = Field(default='', max_length=80, pattern=r'^[A-Za-z0-9_-]*$')
 
 
+@app.post('/auth/check')
+def auth_check():
+    return {'status': 'ok'}
+
+
 def load_model():
     global _model
     with _model_lock:

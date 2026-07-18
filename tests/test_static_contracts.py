@@ -14,6 +14,17 @@ def test_chroma_is_append_only():
     assert '.delete(where' not in sources
 
 
+def test_native_mutation_bridges_require_an_explicit_auth_probe():
+    root = Path(__file__).parents[1]
+    launcher = (root / 'scripts' / 'start.sh').read_text(encoding='utf-8')
+    for name in ('mlx_voice_bridge.py', 'ollama_control_bridge.py'):
+        bridge = (root / 'scripts' / name).read_text(encoding='utf-8')
+        assert "@app.post('/auth/check')" in bridge
+        assert "request.method != 'GET'" in bridge
+        assert "X-Here-I-Am-Local" in bridge
+    assert '"$url/auth/check"' in launcher
+
+
 def test_frontend_ignores_stale_chat_completions_and_batches_screen_reader_updates():
     root = Path(__file__).parents[1]
     script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
