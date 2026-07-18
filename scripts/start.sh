@@ -56,7 +56,7 @@ start_native_bridge() {
   local service="$1" log_file="$2"
   python3 "$SOURCE_DIR/scripts/daemonize.py" \
     --pid-file "$RUN_DIR/$service.pid" --log-file "$log_file" -- \
-    "$SOURCE_DIR/scripts/run_native_bridge.sh" "$service"
+    /bin/bash "$SOURCE_DIR/scripts/run_native_bridge.sh" "$service"
 }
 
 if ! docker info >/dev/null 2>&1; then
