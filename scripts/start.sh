@@ -37,7 +37,8 @@ bridge_token_works() {
 }
 
 restart_stale_bridge() {
-  local service="$1" url="$2" health_url="$3" pid_file="$RUN_DIR/$service.pid"
+  local service="$1" url="$2" health_url="$3" pid_file
+  pid_file="$RUN_DIR/$service.pid"
   if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 && ! bridge_token_works "$url"; then
     if [[ -s "$pid_file" ]]; then
       local pid
