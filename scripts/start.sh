@@ -95,6 +95,10 @@ if [[ -n "${OPENAI_API_KEY:-}" ]]; then
   export OPENAI_API_KEY_HOST_FILE OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
   unset OPENAI_API_KEY
 fi
+if [[ -s "$SECRET_DIR/openai_api_key" ]]; then
+  OPENAI_API_KEY_HOST_FILE="$SECRET_DIR/openai_api_key"
+  export OPENAI_API_KEY_HOST_FILE OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
+fi
 (cd "$BUILD_DIR" && docker compose up -d --build --force-recreate)
 wait_for_url http://127.0.0.1:8787/api/ready 240 'Here I Am'
 
