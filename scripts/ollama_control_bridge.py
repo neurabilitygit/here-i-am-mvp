@@ -42,7 +42,8 @@ def write_pid(pid: int) -> None:
     PID_FILE.write_text(str(pid))
 
 
-@app.get('/ollama/status')
+@app.get('/status')
+@app.get('/ollama/status', include_in_schema=False)
 def status():
     pid = read_pid()
     return {
@@ -52,7 +53,8 @@ def status():
     }
 
 
-@app.post('/ollama/start')
+@app.post('/start')
+@app.post('/ollama/start', include_in_schema=False)
 def start():
     if api_reachable():
         return {'status': 'running', 'detail': 'Ollama already running', 'pid': read_pid()}
@@ -70,7 +72,8 @@ def start():
     return JSONResponse(status_code=500, content={'status': 'error', 'detail': 'Ollama did not become ready'})
 
 
-@app.post('/ollama/stop')
+@app.post('/stop')
+@app.post('/ollama/stop', include_in_schema=False)
 def stop():
     pid = read_pid()
     if pid:

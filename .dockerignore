@@ -1,2 +1,11 @@
 .DS_Store
 ._*
+.git
+.gitignore
+venv
+__pycache__
+*.pyc
+backups
+legacy
+appdata
+data

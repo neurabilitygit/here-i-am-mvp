@@ -1,157 +1,79 @@
-# Here I Am MVP
+# Here I Am
 
-A local autobiography system built for a Mac with native Ollama and a Dockerized web application.
+A local-first autobiography system for recording, transcribing, structuring, retrieving, and exploring a personal archive through an animated “Living Portrait.” Ollama and optional cloned-voice synthesis run natively on macOS; the FastAPI application runs in Docker; durable data remains under `/Volumes/Personal/here-i-am`.
 
-## Architecture
+## Current architecture
 
-- **Native on macOS**: Ollama runtime and Gemma model
-- **Native on macOS**: tiny Ollama control bridge so the browser buttons can start and stop Ollama
-- **Docker container**: web UI, API, recording upload conversion, transcription, transcript analysis, Chroma persistence, and RAG chat
-- **External drive**: all project data under `/Volumes/Personal/here-i-am`
+- `app/` is the only active application implementation.
+- `backend/`, `frontend/`, `worker/`, and `app/app/` are retained legacy prototypes and are not part of the root Docker build.
+- Files under `library/sessions/` are the durable source of truth.
+- Chroma is a derived retrieval index and can be rebuilt into a side-by-side collection.
+- Background-job state is persisted as JSON and interrupted work becomes safely retryable after restart.
 
-## What the MVP does
+See [Architecture](docs/ARCHITECTURE.md), [Data contracts](docs/DATA_CONTRACTS.md), [Operations](docs/OPERATIONS.md), and [migration notes](docs/REFACTOR_MIGRATION.md).
 
-1. **Local LLM Control**
-   - Start Ollama
-   - Stop Ollama
-   - Refresh status
+## Safe local workflow
 
-2. **Learning Mode**
-   - Browser microphone recording
-   - Record, pause, resume, and stop buttons work
-   - Final audio is uploaded and converted to `recording.flac`
-   - Each recording creates a new timestamped session folder
+The external drive produces AppleDouble files that Docker cannot always read. Build from a clean local snapshot:
 
-3. **Transcribing Mode**
-   - Finds new recordings without transcripts
-   - Runs Whisper locally in the app container
-   - Writes `transcript.md`
-   - Shows progress and current filename
-
-4. **Analysis Mode**
-   - Finds transcripts that have not yet been analyzed
-   - Uses Gemma through Ollama to create `metadata.json`
-   - Chunks transcript text and stores it in Chroma
-   - Writes `chunks.jsonl`
-   - Shows progress and current filename
-
-5. **Here I Am**
-   - Uses Chroma retrieval
-   - Sends retrieved context to Gemma through Ollama
-   - Returns a synthesized answer without quoting source passages
-
-## Required external-drive folders
-
-The container expects this host path to exist:
-
-```text
-/Volumes/Personal/here-i-am/
+```bash
+./scripts/start.sh
 ```
 
-Recommended structure:
+Then open `http://localhost:8787`. This mounts the existing data directory; it does not migrate or delete it.
 
-```text
-/Volumes/Personal/here-i-am/
-  library/sessions/
-  appdata/chroma/
-  appdata/logs/
-  appdata/tmp/
-  models/ollama/
-  run/
+For tests, build without mounting personal data:
+
+```bash
+rsync -a --delete --exclude='.git' --exclude='._*' --exclude='venv' ./ /tmp/here-i-am-test/
+xattr -rc /tmp/here-i-am-test
+docker build --target test -t here-i-am-test /tmp/here-i-am-test
+docker run --rm here-i-am-test
 ```
 
-## One-time native setup on the Mac
+## Native dependencies
 
-### 1. Keep Ollama models on Personal
+Ollama models are expected at `/Volumes/Personal/here-i-am/models/ollama`:
 
 ```bash
 launchctl setenv OLLAMA_MODELS /Volumes/Personal/here-i-am/models/ollama
-```
-
-Then restart Ollama if it is already running.
-
-### 2. Pull models natively
-
-```bash
 ollama pull gemma4:e4b
 ollama pull embeddinggemma
+ollama serve
 ```
 
-### 3. Run the Ollama control bridge on the Mac
-
-Install the small dependencies once:
+The optional control bridge should only listen locally:
 
 ```bash
-python3 -m pip install fastapi uvicorn requests
+python3 -m uvicorn scripts.ollama_control_bridge:app --host 127.0.0.1 --port 8778 --app-dir .
 ```
 
-Start the bridge:
+## Product surfaces
+
+- Three stable visual activities: Talk, Remember, and Memories
+- Customizable local SVG portrait with listening, thinking, and audio-reactive speaking states
+- One-touch recording with an animated waveform and a visible local-processing queue
+- Explicit batch preparation using local `gemma4:e4b` analysis plus `embeddinggemma`; OpenAI is never used for embeddings
+- Visual memory gallery with transcript review and revision history
+- Read-only reconciliation report
+- Per-session ZIP export and structured checksum backups
+- Streamed personal/general/hybrid chat with source memories and answer feedback
+- Quantitative vocabulary, rhythm, phrase, and audio-pace fingerprinting
+- Optional OpenAI-compatible cloud generation with explicit disclosure and session-only key handling
+- Production-validated answer-engine selection with no silent fallback; embeddings remain local in every mode
+- Consented local Qwen3-TTS or ElevenLabs cloned-voice playback
+- Side-by-side v2 vector reindex plan and explicit-confirmation job
+
+The active collection is never switched automatically. Validate `here_i_am_chunks_v2` before changing `CHROMA_COLLECTION` in a future, separately approved deployment.
+
+## Optional local cloned voice
+
+The main app runs without voice synthesis. To enable private, reference-conditioned speech on Apple Silicon, install and start the separate native bridge:
 
 ```bash
-python3 -m uvicorn scripts.ollama_control_bridge:app --host 0.0.0.0 --port 8778 --app-dir .
+./scripts/start_voice.sh
 ```
 
-Keep that process running. It gives the browser buttons a safe way to start and stop native Ollama.
+The first run creates an isolated native environment and downloads the configured Qwen3-TTS model. The voice bridge divides an answer into natural speech segments, generates up to four segments together against one cached reference, and stitches them into a single WAV for Safari. Completed answers are cached, active work is cancellable, and a 110-second watchdog prevents an abandoned request from holding the voice indefinitely. In Settings, the recorded speaker must confirm voice rights and select a reference recording before synthesis is enabled. “Prepare voice while I read” can render the WAV in the background as soon as a written answer appears. Original recordings are never edited.
 
-## Start the containerized app
-
-From the project root:
-
-```bash
-docker compose up --build
-```
-
-Open:
-
-```text
-http://localhost:8787
-```
-
-## Session folder contract
-
-Each recording creates a folder like:
-
-```text
-/Volumes/Personal/here-i-am/library/sessions/2026-04-09_14-03-10_childhood-memories/
-  recording.flac
-  transcript.md
-  metadata.json
-  chunks.jsonl
-  processing_state.json
-```
-
-## Notes
-
-- The browser records compressed audio first, then the backend converts it to FLAC on stop.
-- This keeps the browser flow simple while still storing archival FLAC.
-- The MVP assumes **single-speaker recordings only**.
-- There is **no manual transcript editor** in this version.
-- The analysis and transcription jobs are idempotent. They skip work that already has output files.
-
-## Best-practice simplifications used here
-
-- One main app container instead of multiple internal services
-- Native Ollama, because it runs more cleanly on Apple Silicon outside Docker
-- No SQL database
-- Chroma as the only retrieval store
-- Filesystem as the durable source of truth
-
-## Files included
-
-- `Dockerfile`
-- `docker-compose.yml`
-- `app/main.py`
-- `app/config.py`
-- `app/templates/index.html`
-- `app/static/app.js`
-- `app/static/styles.css`
-- `app/services/*`
-- `scripts/ollama_control_bridge.py`
-
-## Likely first adjustments after MVP
-
-- Increase Whisper model size if transcript quality is not good enough
-- Add explicit topic filters in chat
-- Add a session browser
-- Add transcript review and correction
-- Add export and backup commands
+See [Immersive product plan](docs/IMMERSIVE_PRODUCT_PLAN.md) and [voice/cloud consent](docs/VOICE_AND_CLOUD_CONSENT.md).

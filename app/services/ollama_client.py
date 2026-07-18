@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 
 import requests
@@ -15,6 +17,7 @@ class OllamaClient:
         self.chat_model = chat_model
         self.analysis_model = analysis_model
         self.embedding_model = embedding_model
+        self._embedding_context = threading.local()
 
     def is_reachable(self) -> bool:
         try:
@@ -22,6 +25,25 @@ class OllamaClient:
             return resp.ok
         except Exception:
             return False
+
+    def installed_models(self) -> set[str]:
+        try:
+            response = requests.get(f"{self.base_url}/api/tags", timeout=10)
+            response.raise_for_status()
+            models = response.json().get('models', [])
+            names: set[str] = set()
+            for model in models:
+                name = str(model.get('name') or model.get('model') or '').strip()
+                if name:
+                    names.add(name)
+                    names.add(name.removesuffix(':latest'))
+            return names
+        except Exception:
+            return set()
+
+    def has_model(self, model: str) -> bool:
+        installed = self.installed_models()
+        return model in installed or f'{model}:latest' in installed
 
     def control_status(self) -> dict[str, Any]:
         try:
@@ -48,14 +70,30 @@ class OllamaClient:
         except Exception as exc:
             return {"status": "unavailable", "detail": str(exc)}
 
-    def _generate(self, model: str, prompt: str) -> str:
+    def _generate(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        json_mode: bool = False,
+        max_tokens: int | None = None,
+    ) -> str:
         start = time.time()
+        options = {"temperature": 0 if json_mode else settings.chat_temperature}
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
+        elif model == self.chat_model:
+            options["num_predict"] = settings.ollama_chat_max_tokens
         resp = requests.post(
             f"{self.base_url}/api/generate",
             json={
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
+                "think": False,
+                "keep_alive": settings.ollama_keep_alive,
+                "options": options,
+                **({"format": "json"} if json_mode else {}),
             },
             timeout=300,
         )
@@ -65,14 +103,127 @@ class OllamaClient:
         print(f"[TIMING] ollama_generate model={model} elapsed={elapsed:.2f}s")
         return data.get("response", "").strip()
 
-    def chat(self, prompt: str) -> str:
-        return self._generate(self.chat_model, prompt)
+    def chat(self, prompt: str, *, json_mode: bool = False) -> str:
+        return self._generate(self.chat_model, prompt, json_mode=json_mode)
 
     def analyze(self, prompt: str) -> str:
-        return self._generate(self.analysis_model, prompt)
+        return self._generate(
+            self.analysis_model,
+            prompt,
+            max_tokens=settings.ollama_analysis_max_tokens,
+        )
+
+    def stream_chat(self, prompt: str):
+        with requests.post(
+            f"{self.base_url}/api/generate",
+            json={
+                "model": self.chat_model,
+                "prompt": prompt,
+                "stream": True,
+                "think": False,
+                "keep_alive": settings.ollama_keep_alive,
+                "options": {
+                    "temperature": settings.chat_temperature,
+                    "num_predict": settings.ollama_chat_max_tokens,
+                },
+            },
+            stream=True,
+            timeout=300,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                token = event.get('response', '')
+                if token:
+                    yield token
+
+    def preload(self) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/generate",
+            json={"model": self.chat_model, "prompt": "", "keep_alive": settings.ollama_keep_alive},
+            timeout=300,
+        )
+        return response.ok
+
+    def preload_embeddings(self) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/embed",
+            json={
+                "model": self.embedding_model,
+                "input": "memory search warmup",
+                "keep_alive": settings.ollama_keep_alive,
+            },
+            timeout=300,
+        )
+        return response.ok
+
+    def preload_analysis(self) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/generate",
+            json={"model": self.analysis_model, "prompt": "", "stream": False, "keep_alive": settings.ollama_keep_alive},
+            timeout=300,
+        )
+        return response.ok
+
+    def unload_chat(self) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/generate",
+            json={"model": self.chat_model, "keep_alive": 0},
+            timeout=30,
+        )
+        return response.ok
+
+    def unload_analysis(self) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/generate",
+            json={"model": self.analysis_model, "keep_alive": 0},
+            timeout=30,
+        )
+        return response.ok
+
+    def unload_embeddings(self) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/embed",
+            json={"model": self.embedding_model, "input": "", "keep_alive": 0},
+            timeout=30,
+        )
+        return response.ok
+
+    @contextmanager
+    def local_embedding_batch(self):
+        """Keep local Gemma models resident only for one explicit indexing batch."""
+        if not self.is_reachable():
+            raise RuntimeError("Local Ollama is not running")
+        if not self.preload_analysis():
+            raise RuntimeError(f"Could not load local analysis model {self.analysis_model}")
+        if not self.preload_embeddings():
+            self.unload_analysis()
+            raise RuntimeError(f"Could not load local embedding model {self.embedding_model}")
+        self._embedding_context.batch_active = True
+        try:
+            yield
+        finally:
+            self._embedding_context.batch_active = False
+            try:
+                self.unload_embeddings()
+            finally:
+                self.unload_analysis()
+
+    def preload_all(self) -> bool:
+        return self.preload() and self.preload_embeddings()
 
     def generate_json(self, prompt: str) -> dict[str, Any]:
-        raw = self.analyze(prompt).strip()
+        raw = self._generate(
+            self.analysis_model,
+            prompt,
+            json_mode=True,
+            max_tokens=settings.ollama_analysis_max_tokens,
+        ).strip()
 
         if raw.startswith("```"):
             lines = raw.splitlines()
@@ -96,6 +247,7 @@ class OllamaClient:
             json={
                 "model": self.embedding_model,
                 "prompt": text,
+                "keep_alive": settings.ollama_keep_alive if getattr(self._embedding_context, 'batch_active', False) else 0,
             },
             timeout=300,
         )
@@ -122,6 +274,7 @@ class OllamaClient:
             json={
                 "model": self.embedding_model,
                 "input": values if not single else values[0],
+                "keep_alive": settings.ollama_keep_alive if getattr(self._embedding_context, 'batch_active', False) else 0,
             },
             timeout=300,
         )

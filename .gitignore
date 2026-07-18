@@ -7,5 +7,8 @@ data/
 library/
 sessions/
 appdata/
-models/
+# Runtime model data belongs under the external data root. Do not ignore
+# Python packages named "models" inside the source tree.
+/models/
+/data/models/
 tmp/

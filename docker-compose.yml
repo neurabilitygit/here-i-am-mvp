@@ -3,25 +3,79 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     container_name: here-i-am-app
     ports:
-      - "8787:8000"
+      - "127.0.0.1:8787:8000"
     environment:
       DATA_ROOT: /data
       SESSIONS_DIR: /data/library/sessions
       CHROMA_DIR: /data/appdata/chroma
       LOGS_DIR: /data/appdata/logs
       TMP_DIR: /data/appdata/tmp
+      JOBS_DIR: /data/appdata/jobs
+      LOCKS_DIR: /data/appdata/locks
+      EXPORTS_DIR: /data/appdata/exports
+      ARCHIVE_DIR: /data/library/archive
+      PREFERENCES_PATH: /data/appdata/preferences.json
+      FIDELITY_PROFILE_PATH: /data/appdata/speaker_fingerprint.json
+      FEEDBACK_PATH: /data/appdata/answer_feedback.jsonl
+      GENERATION_AUDIT_PATH: /data/appdata/generation_audit.jsonl
+      VOICE_DIR: /data/appdata/voice
+      HF_HOME: /data/appdata/models/huggingface
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_CONTROL_URL: http://host.docker.internal:8778
+      VOICE_BRIDGE_URL: http://host.docker.internal:8779
+      VOICE_HOST_DATA_ROOT: /Volumes/Personal/here-i-am
       OLLAMA_CHAT_MODEL: gemma4:e4b
       OLLAMA_ANALYSIS_MODEL: gemma4:e4b
       OLLAMA_EMBEDDING_MODEL: embeddinggemma
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_CHAT_MAX_TOKENS: 640
+      OLLAMA_ANALYSIS_MAX_TOKENS: 3072
+      TEXT_PROVIDER: ${TEXT_PROVIDER:-local}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      ALLOWED_OPENAI_MODELS: ${ALLOWED_OPENAI_MODELS:-gpt-5.4-mini,gpt-5.4}
+      ALLOW_RUNTIME_CLOUD_KEY: ${ALLOW_RUNTIME_CLOUD_KEY:-false}
+      PROVIDER_STREAM_HEARTBEAT_SECONDS: 15
+      PROVIDER_CONNECT_TIMEOUT_SECONDS: 10
+      PROVIDER_READ_TIMEOUT_SECONDS: 300
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-disabled}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
       WHISPER_MODEL: base
       CHUNK_SIZE_CHARS: 1200
       CHUNK_OVERLAP_CHARS: 200
+      CHUNK_SIZE_WORDS: 220
+      CHUNK_OVERLAP_WORDS: 40
+      RETRIEVAL_SEED_CHUNKS: 4
+      RETRIEVAL_CANDIDATE_CHUNKS: 12
+      MAX_CHAT_CONTEXT_CHUNKS: 6
+      MAX_CONTEXT_CHUNK_CHARS: 1200
+      VOICE_REQUEST_TIMEOUT_SECONDS: 60
+      VOICE_BATCH_TIMEOUT_SECONDS: 900
+      CHROMA_COLLECTION: here_i_am_chunks
+      CHROMA_MIGRATION_COLLECTION: here_i_am_chunks_v2
+      CORS_ORIGINS: http://localhost:8787,http://127.0.0.1:8787
     volumes:
       - /Volumes/Personal/here-i-am:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    cap_drop:
+      - ALL
+    read_only: true
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:size=1g
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
