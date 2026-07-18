@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from config import settings
@@ -39,7 +40,7 @@ def test_structured_backup_copies_without_changing_source():
     assert 'appdata/chroma-export.jsonl' in backed_up
     assert manifest['backup_kind'] == 'full-rebuildable'
 
-    empty_restore = Path(settings.data_root).parent / 'empty-restore'
+    empty_restore = Path(tempfile.mkdtemp(prefix='here-i-am-empty-restore-'))
     verified = subprocess.run(
         [sys.executable, 'scripts/restore_backup.py', str(backup), str(empty_restore)],
         capture_output=True,

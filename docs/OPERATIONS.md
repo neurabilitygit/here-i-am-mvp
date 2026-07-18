@@ -6,7 +6,7 @@
 2. Confirm native Ollama responds at `http://127.0.0.1:11434/api/tags`.
 3. Run `scripts/start.sh`, which creates a clean build snapshot under `/tmp` before Docker sees the source.
 4. Check `/api/health` for application/storage liveness and `/api/ready` for Ollama readiness.
-5. For local cloned voice, run `scripts/start_voice.sh` and check `http://127.0.0.1:8779/health`.
+5. The production launcher starts the cloned-voice and Ollama-control bridges in detached native process sessions; check `http://127.0.0.1:8779/health` and `http://127.0.0.1:8778/ollama/status`.
 
 For the current Railway-backed OpenAI benchmark, the desktop launcher reads `OPENAI_API_KEY` from the linked Rising Senior Railway service, writes it to a mode-600 host secret, and mounts that file read-only at `/run/secrets/openai_api_key`. The value is not placed in Compose, preferences, logs, or source control. Here I Am defaults to the lower-cost `gpt-5.4-mini`; the Railway service's own model selection is not changed.
 

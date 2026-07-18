@@ -70,6 +70,7 @@ def test_audio_upload_enters_the_unprocessed_memory_queue():
 
 
 def test_chat_response_remains_backward_compatible(monkeypatch):
+    monkeypatch.setattr(main, 'provider_status', lambda: {'active': 'local', 'active_ready': True})
     monkeypatch.setattr(main, 'answer_question', lambda _question: ChatResponse(answer='Synthetic answer', mode='GENERAL'))
     response = client.post('/api/chat', json={'question': 'Synthetic question'})
     assert response.status_code == 200

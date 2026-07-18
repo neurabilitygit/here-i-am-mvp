@@ -7,11 +7,24 @@ def test_chroma_is_append_only():
         path.read_text(encoding='utf-8')
         for base in (root / 'app', root / 'scripts')
         for path in base.rglob('*.py')
-        if '__pycache__' not in path.parts
+        if '__pycache__' not in path.parts and not path.name.startswith('._')
     )
     assert 'collection.delete(' not in sources
     assert 'target.delete(' not in sources
     assert '.delete(where' not in sources
+
+
+def test_native_bridges_are_detached_and_read_the_protected_token():
+    root = Path(__file__).parents[1]
+    launcher = (root / 'scripts' / 'start.sh').read_text()
+    runner = (root / 'scripts' / 'run_native_bridge.sh').read_text()
+    daemonizer = (root / 'scripts' / 'daemonize.py').read_text()
+    assert 'scripts/daemonize.py' in launcher
+    assert 'nohup "$SOURCE_DIR/scripts/start_voice.sh"' not in launcher
+    assert 'os.setsid()' in daemonizer
+    assert daemonizer.count('os.fork()') == 2
+    assert 'local_bridge_token' in runner
+    assert 'exec "$SOURCE_DIR/scripts/start_voice.sh"' in runner
 
 
 def test_native_mutation_bridges_require_an_explicit_auth_probe():

@@ -52,6 +52,13 @@ restart_stale_bridge() {
   fi
 }
 
+start_native_bridge() {
+  local service="$1" log_file="$2"
+  python3 "$SOURCE_DIR/scripts/daemonize.py" \
+    --pid-file "$RUN_DIR/$service.pid" --log-file "$log_file" -- \
+    "$SOURCE_DIR/scripts/run_native_bridge.sh" "$service"
+}
+
 if ! docker info >/dev/null 2>&1; then
   open -a Docker
   for _ in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 2; done
@@ -71,15 +78,13 @@ done
 
 restart_stale_bridge voice http://127.0.0.1:8779 http://127.0.0.1:8779/health
 if ! curl -fsS --max-time 2 http://127.0.0.1:8779/health >/dev/null 2>&1; then
-  nohup "$SOURCE_DIR/scripts/start_voice.sh" >"$RUN_DIR/voice.log" 2>&1 & echo $! >"$RUN_DIR/voice.pid"
+  start_native_bridge voice "$RUN_DIR/voice.log"
 fi
 wait_for_url http://127.0.0.1:8779/health 600 'local voice'
 
 restart_stale_bridge ollama-control http://127.0.0.1:8778 http://127.0.0.1:8778/ollama/status
 if ! curl -fsS --max-time 2 http://127.0.0.1:8778/ollama/status >/dev/null 2>&1; then
-  [[ -x "$VOICE_ENV/bin/uvicorn" ]] || { echo 'Voice runtime is missing uvicorn.' >&2; exit 1; }
-  nohup "$VOICE_ENV/bin/uvicorn" scripts.ollama_control_bridge:app --app-dir "$SOURCE_DIR" --host 127.0.0.1 --port 8778 >"$RUN_DIR/ollama-control.log" 2>&1 &
-  echo $! >"$RUN_DIR/ollama-control.pid"
+  start_native_bridge ollama-control "$RUN_DIR/ollama-control.log"
 fi
 wait_for_url http://127.0.0.1:8778/ollama/status 60 'Ollama control service'
 
