@@ -403,6 +403,7 @@ async function askQuestion(question) {
   byId('answer-card').classList.remove('complete');
   byId('answer-text').textContent = '';
   byId('answer-announcement').textContent = '';
+  byId('feedback-up').classList.remove('selected');
   byId('speak-answer').disabled = true;
   byId('compare-answer').disabled = true;
   setPresence('Finding the right memories…', 'thinking');
@@ -466,6 +467,30 @@ async function askQuestion(question) {
     }
     endFetchTask();
   }
+}
+
+function clearAnswer() {
+  state.chatGeneration += 1;
+  state.chatAbort?.abort();
+  state.chatAbort = null;
+  cancelVoicePrerender();
+  if (state.voicePreparing || state.voicePlaying) stopSpeaking();
+  state.lastQuestion = '';
+  state.lastAnswer = '';
+  state.lastMode = '';
+  state.lastProvider = '';
+  byId('answer-text').textContent = '';
+  byId('answer-announcement').textContent = '';
+  byId('answer-card').classList.remove('complete');
+  byId('answer-card').hidden = true;
+  byId('answer-card').scrollTop = 0;
+  byId('chat-send').disabled = false;
+  byId('compare-answer').disabled = true;
+  byId('feedback-up').classList.remove('selected');
+  renderTalkProviderBadge(state.preferences?.provider);
+  updateSpeakButton();
+  setPresence('Ready to talk', 'resting');
+  byId('chat-question').focus({preventScroll: true});
 }
 
 async function compareAnswers() {
@@ -1065,7 +1090,7 @@ function bindEvents(){
   byId('settings-save').addEventListener('click',()=>saveSettings());byId('setting-provider').addEventListener('change',saveProviderSelection);byId('avatar-save').addEventListener('click',saveAvatar);
   byId('chat-form').addEventListener('submit',(event)=>{event.preventDefault();askQuestion(byId('chat-question').value)});byId('chat-question').addEventListener('input',growQuestionBox);byId('chat-question').addEventListener('keydown',(event)=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();askQuestion(event.currentTarget.value)}});
   document.querySelectorAll('#suggestions button').forEach((button)=>button.addEventListener('click',()=>askQuestion(button.textContent)));
-  byId('voice-question').addEventListener('click',()=>state.speechRecognition?.start());byId('speak-answer').addEventListener('click',speakAnswer);byId('stop-speaking').addEventListener('click',stopSpeaking);byId('compare-answer').addEventListener('click',compareAnswers);byId('feedback-up').addEventListener('click',()=>sendFeedback('up'));byId('feedback-down').addEventListener('click',()=>sendFeedback('down'));
+  byId('voice-question').addEventListener('click',()=>state.speechRecognition?.start());byId('speak-answer').addEventListener('click',speakAnswer);byId('stop-speaking').addEventListener('click',stopSpeaking);byId('compare-answer').addEventListener('click',compareAnswers);byId('feedback-up').addEventListener('click',()=>sendFeedback('up'));byId('clear-answer').addEventListener('click',clearAnswer);
   byId('record-start').addEventListener('click',startRecording);byId('record-pause').addEventListener('click',pauseRecording);byId('record-stop').addEventListener('click',stopRecording);
   byId('memory-search').addEventListener('input',renderMemories);byId('memory-save').addEventListener('click',saveMemory);
   setupMemoryImport();

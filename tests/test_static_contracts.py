@@ -109,6 +109,23 @@ def test_talk_card_does_not_render_memory_source_chips():
     assert 'Memories used' not in template
 
 
+def test_answer_close_control_clears_the_complete_talk_state():
+    root = Path(__file__).parents[1]
+    script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
+    template = (root / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+    assert 'id="clear-answer"' in template
+    assert 'aria-label="Clear this answer"' in template
+    assert "byId('clear-answer').addEventListener('click',clearAnswer)" in script
+    assert 'function clearAnswer()' in script
+    clear_body = script.split('function clearAnswer()', 1)[1].split('\n}', 1)[0]
+    assert 'state.chatAbort?.abort()' in clear_body
+    assert 'cancelVoicePrerender()' in clear_body
+    assert "byId('answer-text').textContent = ''" in clear_body
+    assert "byId('answer-card').hidden = true" in clear_body
+    assert "state.lastAnswer = ''" in clear_body
+    assert 'renderTalkProviderBadge(state.preferences?.provider)' in clear_body
+
+
 def test_memories_page_supports_accessible_audio_file_import():
     root = Path(__file__).parents[1]
     script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
