@@ -54,6 +54,8 @@ python3 -m uvicorn scripts.ollama_control_bridge:app --host 127.0.0.1 --port 877
 - Customizable local SVG portrait with listening, thinking, and audio-reactive speaking states
 - One-touch recording with an animated waveform and a visible local-processing queue
 - Explicit batch preparation using local `gemma4:e4b` analysis plus `embeddinggemma`; OpenAI is never used for embeddings
+- Two-person conversation capture with cloud speaker diarization, reusable voice references, an explicit name-and-role review gate, and subject-only autobiographical evidence
+- A persistent People gallery with one voice profile and avatar per speaker; users may upload an illustration or consent to turn a face photo into a matching non-photorealistic avatar
 - Visual memory gallery with transcript review and revision history
 - Read-only reconciliation report
 - Per-session ZIP export and full rebuildable checksum backups, including original recordings and an append-only Chroma export
@@ -65,6 +67,12 @@ python3 -m uvicorn scripts.ollama_control_bridge:app --host 127.0.0.1 --port 877
 - Side-by-side v2 vector reindex plan and explicit-confirmation job
 
 The active collection is never switched automatically. Validate `here_i_am_chunks_v2` before changing `CHROMA_COLLECTION` in a future, separately approved deployment.
+
+## Two-person conversations
+
+Choose **A conversation** before recording or importing audio. The explicit memory batch sends a compressed analysis copy to `gpt-4o-transcribe-diarize` to separate voices and match up to four stored 2–10 second voice references. Unknown voices stop at a visual review gate where the user names each person and chooses exactly one memory subject. Interviewer questions are retained as retrieval context, but only the subject's words are analyzed as autobiographical evidence or embedded. Metadata and vectors continue to use local Gemma and local `embeddinggemma`; Chroma remains append-only.
+
+Each confirmed speaker receives a durable profile under `appdata/speakers`. A speaker can use an uploaded illustrated avatar directly. With explicit image-rights confirmation, a face photo and the existing Here I Am art reference can be sent to `gpt-image-2` to produce a non-photorealistic portrait. Originals and all generated versions remain in the rebuildable backup set.
 
 ## Optional local cloned voice
 

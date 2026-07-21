@@ -69,6 +69,52 @@ def test_audio_upload_enters_the_unprocessed_memory_queue():
     assert status['queued_recordings'] >= 1
 
 
+def test_conversation_upload_preserves_source_and_waits_for_speaker_processing():
+    audio = BytesIO()
+    with wave.open(audio, 'wb') as recording:
+        recording.setnchannels(1)
+        recording.setsampwidth(2)
+        recording.setframerate(16000)
+        recording.writeframes(b'\0\0' * 1600)
+
+    response = client.post(
+        '/api/recordings/upload',
+        files={'file': ('Two Voices.wav', audio.getvalue(), 'audio/wav')},
+        data={'title': 'Two Voices', 'recording_mode': 'conversation'},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['recording_mode'] == 'conversation'
+    session = Path(settings.sessions_dir) / payload['session_id']
+    assert (session / 'recording.source').exists()
+    detail = client.get(f"/api/sessions/{payload['session_id']}").json()
+    assert detail['recording_mode'] == 'conversation'
+    assert detail['speaker_review_status'] == 'pending'
+
+
+def test_speaker_can_receive_an_uploaded_avatar():
+    profile = client.post('/api/speakers', json={
+        'display_name': 'Avatar Test Person',
+        'default_role': 'other',
+    })
+    assert profile.status_code == 200
+    speaker_id = profile.json()['speaker_id']
+    avatar_bytes = (Path(main.BASE_DIR) / 'static' / 'assets' / 'eric-bass-avatar-flat.webp').read_bytes()
+
+    upload = client.post(
+        f'/api/speakers/{speaker_id}/avatar/upload',
+        files={'file': ('portrait.webp', avatar_bytes, 'image/webp')},
+        data={'kind': 'avatar'},
+    )
+
+    assert upload.status_code == 200
+    assert upload.json()['avatar_url'] == f'/api/speakers/{speaker_id}/avatar'
+    served = client.get(upload.json()['avatar_url'])
+    assert served.status_code == 200
+    assert served.headers['content-type'] == 'image/webp'
+
+
 def test_chat_response_remains_backward_compatible(monkeypatch):
     monkeypatch.setattr(main, 'provider_status', lambda: {'active': 'local', 'active_ready': True})
     monkeypatch.setattr(main, 'answer_question', lambda _question: ChatResponse(answer='Synthetic answer', mode='GENERAL'))
@@ -130,6 +176,7 @@ def test_memory_batch_is_local_only_and_requires_confirmation():
     assert status.status_code == 200
     assert status.json()['embedding_provider'] == 'local_ollama'
     assert status.json()['openai_embedding_enabled'] is False
+    assert status.json()['speaker_diarization_provider'] in {'openai', 'disabled'}
     assert status.json()['analysis_model'] == 'gemma4:e4b'
     assert status.json()['embedding_model'] == 'embeddinggemma'
     assert 'last_job' in status.json()

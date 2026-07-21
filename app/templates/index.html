@@ -82,6 +82,11 @@
         <div class="scene-card recording-card">
           <p class="scene-kicker">Add to your story</p>
           <h2 id="remember-title" tabindex="-1">What would you like to remember?</h2>
+          <fieldset class="recording-mode" aria-label="Who will be speaking">
+            <legend>Who is speaking?</legend>
+            <label><input id="record-mode-solo" type="radio" name="record-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong><small>One voice</small></span></label>
+            <label><input id="record-mode-conversation" type="radio" name="record-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>A conversation</strong><small>Two voices</small></span></label>
+          </fieldset>
           <label class="floating-field" for="record-title"><span>Give this memory a name</span><input id="record-title" maxlength="160" placeholder="A summer afternoon…" /></label>
           <canvas id="record-wave" width="700" height="110" role="img" aria-label="Live recording waveform. Recording status is described below."></canvas>
           <div id="record-time" class="record-time">00:00</div>
@@ -102,7 +107,7 @@
         <section id="memory-queue" class="memory-queue" aria-labelledby="memory-queue-title" hidden>
           <div class="queue-orb" aria-hidden="true"><strong id="memory-queue-count">0</strong><span>waiting</span></div>
           <div class="queue-copy">
-            <p class="scene-kicker">Local memory workshop</p>
+            <p class="scene-kicker">Memory workshop</p>
             <h3 id="memory-queue-title">New recordings are safely waiting</h3>
             <p id="memory-queue-detail">Add them to Here I Am when you do not need to use the system for a while.</p>
             <p id="memory-queue-error" class="memory-queue-error" role="alert" hidden></p>
@@ -118,7 +123,21 @@
           </div>
           <input id="memory-upload-input" class="sr-only" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.aac,.ogg,.opus,.webm,.mp4" multiple />
           <button id="memory-upload-choose" class="memory-upload-button" type="button">Choose recording</button>
+          <fieldset class="import-mode recording-mode" aria-label="Voices in the imported recording">
+            <legend>Voices in this recording</legend>
+            <label><input id="import-mode-solo" type="radio" name="import-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong></span></label>
+            <label><input id="import-mode-conversation" type="radio" name="import-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>Conversation</strong></span></label>
+          </fieldset>
           <p id="memory-upload-status" class="memory-upload-status" role="status" aria-live="polite">Audio stays on this Mac.</p>
+        </section>
+        <section id="speaker-review-queue" class="speaker-review-queue" hidden aria-labelledby="speaker-review-title">
+          <div class="voice-rings" aria-hidden="true"><i></i><i></i></div>
+          <div><p class="scene-kicker">Who was speaking?</p><h3 id="speaker-review-title">Name the voices before this becomes a memory</h3><p>The subject's words become memory evidence. Questions remain context only.</p></div>
+          <div id="speaker-review-buttons" class="speaker-review-buttons"></div>
+        </section>
+        <section id="speaker-gallery-section" class="speaker-gallery-section" hidden aria-labelledby="speaker-gallery-title">
+          <div class="memory-heading"><div><p class="scene-kicker">People in your story</p><h3 id="speaker-gallery-title">Voices and portraits</h3></div></div>
+          <div id="speaker-gallery" class="speaker-gallery"></div>
         </section>
         <div id="memory-summary" class="memory-count" aria-live="polite"></div>
         <div id="memory-gallery" class="memory-gallery"></div>
@@ -230,13 +249,37 @@
 
   <dialog id="memory-batch-dialog" class="sheet-dialog compact-sheet">
     <div class="sheet memory-batch-sheet">
-      <header><div><p class="scene-kicker">Private local processing</p><h2>Prepare queued memories?</h2></div><button id="memory-batch-close" class="close-button" type="button" aria-label="Close">×</button></header>
+      <header><div><p class="scene-kicker">Memory preparation</p><h2>Prepare queued memories?</h2></div><button id="memory-batch-close" class="close-button" type="button" aria-label="Close">×</button></header>
       <div class="batch-model-mark" aria-hidden="true">G</div>
-      <p id="memory-batch-explanation">The queued recordings will be transcribed, understood, and embedded only on this Mac.</p>
-      <div class="batch-warning"><strong>Here I Am will be unavailable until this finishes.</strong><span>Local Gemma models need the Mac's memory and will be unloaded automatically afterward.</span></div>
+      <p id="memory-batch-explanation">Solo recordings are prepared locally. Conversation recordings use cloud speaker recognition; understanding and embeddings remain local.</p>
+      <div class="batch-warning"><strong>Here I Am will be unavailable until this pass finishes.</strong><span>Conversation voices may need your review before local Gemma can connect them to memory.</span></div>
       <label class="consent-card"><input id="memory-batch-confirm" type="checkbox"/><span><strong>I am ready to begin.</strong><small>I understand I should wait until the full batch is finished.</small></span></label>
       <button id="memory-batch-start" class="primary-wide" type="button" disabled>Start local batch</button>
       <p id="memory-batch-dialog-status" class="plain-status" role="status"></p>
+    </div>
+  </dialog>
+
+  <dialog id="speaker-review-dialog" class="sheet-dialog">
+    <div class="sheet speaker-review-sheet">
+      <header><div><p class="scene-kicker">A conversation</p><h2>Name each voice</h2></div><button id="speaker-review-close" class="close-button" type="button" aria-label="Close voice review">×</button></header>
+      <p class="setting-note">Listen to each voice, choose a person or add a new name, then identify the one person whose memories should be kept.</p>
+      <div id="speaker-clusters" class="speaker-clusters"></div>
+      <footer><button id="speaker-review-save" class="primary-wide" type="button">Save voices and prepare memory</button><p id="speaker-review-status" role="status" aria-live="polite"></p></footer>
+    </div>
+  </dialog>
+
+  <dialog id="speaker-avatar-dialog" class="sheet-dialog compact-sheet">
+    <div class="sheet speaker-avatar-sheet">
+      <header><div><p class="scene-kicker">A face for the voice</p><h2 id="speaker-avatar-title">Portrait</h2></div><button id="speaker-avatar-close" class="close-button" type="button" aria-label="Close speaker portrait">×</button></header>
+      <div class="speaker-avatar-preview"><img id="speaker-avatar-preview" alt="Speaker avatar preview" hidden /><span id="speaker-avatar-placeholder" aria-hidden="true">✦</span></div>
+      <p>Use an illustrated avatar you already have, or add a face photo and ask Here I Am to create a warm illustration in this app's style.</p>
+      <div class="avatar-choice-grid">
+        <label class="avatar-upload-choice"><strong>Use an avatar</strong><small>Upload an illustration</small><input id="speaker-avatar-upload" type="file" accept="image/*,.heic,.heif" /></label>
+        <label class="avatar-upload-choice"><strong>Use a face photo</strong><small>Store it here; create an illustration</small><input id="speaker-photo-upload" type="file" accept="image/*,.heic,.heif" /></label>
+      </div>
+      <label class="consent-card"><input id="speaker-photo-consent" type="checkbox"/><span><strong>I have the right to use this photo.</strong><small>Creating an illustration sends the photo and a style reference to OpenAI. The original also remains stored on this system.</small></span></label>
+      <button id="speaker-avatar-generate" class="primary-wide" type="button" disabled>Create illustrated avatar</button>
+      <p id="speaker-avatar-status" role="status" aria-live="polite"></p>
     </div>
   </dialog>
 

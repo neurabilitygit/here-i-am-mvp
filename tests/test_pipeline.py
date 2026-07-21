@@ -1,11 +1,13 @@
 from services.pipeline import (
     build_chunk_records,
+    build_conversation_chunk_records,
     active_chroma_filter,
     content_version_for,
     metadata_prompt,
     normalize_chroma_value,
     record_is_active,
     semantic_chunks,
+    subject_evidence_only,
 )
 
 
@@ -64,3 +66,25 @@ def test_active_chroma_filter_uses_versioned_manifest_and_preserves_legacy_fallb
             {'content_version': {'$eq': 'version-a'}},
         ],
     }
+
+
+def test_conversation_chunks_mark_subject_evidence_and_keep_questions_context_only():
+    records = build_conversation_chunk_records(
+        'conversation-1',
+        [{
+            'memory_unit_id': 'unit-0001',
+            'subject_speaker_id': 'eric',
+            'subject_evidence': 'I built a tree house with my father.',
+            'retrieval_context': 'What did you build as a child?',
+            'start': 2.0,
+            'end': 7.0,
+        }],
+        {'title': 'Childhood', 'summary': 'A childhood memory'},
+        content_version='version-a',
+    )
+
+    assert records[0]['metadata']['evidence_role'] == 'memory_subject'
+    assert records[0]['metadata']['subject_speaker_id'] == 'eric'
+    assert 'retrieval only, not autobiographical evidence' in records[0]['text']
+    assert 'Memory subject evidence: I built a tree house' in records[0]['text']
+    assert subject_evidence_only(records[0]['text']) == 'I built a tree house with my father.'

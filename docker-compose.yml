@@ -23,6 +23,7 @@ services:
       FEEDBACK_PATH: /data/appdata/answer_feedback.jsonl
       GENERATION_AUDIT_PATH: /data/appdata/generation_audit.jsonl
       VOICE_DIR: /data/appdata/voice
+      SPEAKERS_DIR: /data/appdata/speakers
       HF_HOME: /data/appdata/models/huggingface
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_CONTROL_URL: http://host.docker.internal:8778
@@ -47,6 +48,11 @@ services:
       VOICE_PROVIDER: ${VOICE_PROVIDER:-disabled}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
+      SPEAKER_DIARIZATION_PROVIDER: ${SPEAKER_DIARIZATION_PROVIDER:-openai}
+      SPEAKER_DIARIZATION_MODEL: ${SPEAKER_DIARIZATION_MODEL:-gpt-4o-transcribe-diarize}
+      SPEAKER_DIARIZATION_TIMEOUT_SECONDS: ${SPEAKER_DIARIZATION_TIMEOUT_SECONDS:-900}
+      AVATAR_IMAGE_MODEL: ${AVATAR_IMAGE_MODEL:-gpt-image-2}
+      AVATAR_IMAGE_QUALITY: ${AVATAR_IMAGE_QUALITY:-medium}
       WHISPER_MODEL: base
       MAX_UPLOAD_SECONDS: 14400
       API_DOCS_ENABLED: "false"

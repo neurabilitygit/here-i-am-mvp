@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     feedback_path: str = '/data/appdata/answer_feedback.jsonl'
     generation_audit_path: str = '/data/appdata/generation_audit.jsonl'
     voice_dir: str = '/data/appdata/voice'
+    speakers_dir: str = '/data/appdata/speakers'
     ollama_base_url: str = 'http://host.docker.internal:11434'
     ollama_control_url: str = 'http://host.docker.internal:8778'
     ollama_chat_model: str = 'gemma4:e4b'
@@ -50,6 +51,13 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ''
     elevenlabs_voice_id: str = ''
     elevenlabs_model: str = 'eleven_flash_v2_5'
+    speaker_diarization_provider: Literal['openai', 'disabled'] = 'openai'
+    speaker_diarization_model: str = 'gpt-4o-transcribe-diarize'
+    speaker_diarization_timeout_seconds: int = 900
+    speaker_reference_seconds: int = 8
+    avatar_image_model: str = 'gpt-image-2'
+    avatar_image_quality: Literal['low', 'medium', 'high'] = 'medium'
+    max_avatar_upload_bytes: int = 20 * 1024 * 1024
     whisper_model: str = 'base'
     chroma_collection: str = 'here_i_am_chunks'
     chroma_migration_collection: str = 'here_i_am_chunks_v2'

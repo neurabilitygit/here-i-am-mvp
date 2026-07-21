@@ -24,7 +24,7 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 from config import settings
-from models.schemas import AnswerFeedback, ChatBenchmarkResponse, ChatRequest, ChatResponse, GenericStatus, PreferencesUpdate, ProviderStatus, RecordingUploadResponse, ReconciliationReport, SessionDetail, SessionSummary, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
+from models.schemas import AnswerFeedback, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, GenericStatus, PreferencesUpdate, ProviderStatus, RecordingUploadResponse, ReconciliationReport, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
 from services.jobs import JobConflictError, job_manager
 from services.library import build_session_export, create_structured_backup, get_session, list_sessions, reconciliation_report
 from services.ollama_client import ollama_client
@@ -32,7 +32,9 @@ from services.fidelity import build_speaker_fingerprint, load_speaker_fingerprin
 from services.pipeline import analyze_unprocessed, answer_question, benchmark_question, memory_queue_status, prepare_answer, process_memory_batch, reindex_to_migration_collection, stream_prepared_answer, transcribe_unprocessed
 from services.preferences import cloud_api_key, load_preferences, public_preferences, save_preferences, set_runtime_cloud_key
 from services.providers import active_provider, provider_status, public_provider_error, record_generation_failure, record_stream_audit, transition_provider, validate_provider_selection
-from services.storage import archive_session, create_session_dir, ensure_directories, list_session_dirs, revise_transcript, safe_session_dir, session_lock, session_paths
+from services.storage import archive_session, create_session_dir, ensure_directories, list_session_dirs, revise_transcript, safe_session_dir, session_lock, session_paths, update_processing_state
+from services.speakers import SpeakerWorkflowError, apply_speaker_assignments, create_speaker, list_speakers, speaker_review, speaker_sample
+from services.avatars import AvatarWorkflowError, active_avatar_path, generate_avatar, store_speaker_image, validate_avatar_generation
 from services.voice import LOCAL_BRIDGE_HEADERS, cancel_synthesis_stream, list_voice_candidates, load_voice_status, prepare_voice_reference, revoke_voice, synthesize
 
 @asynccontextmanager
@@ -208,11 +210,25 @@ def stop_ollama():
 
 
 @app.post('/api/recordings/upload', response_model=RecordingUploadResponse)
-async def upload_recording(file: UploadFile = File(...), title: str | None = Form(default=None)):
+async def upload_recording(
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    recording_mode: str = Form(default='solo'),
+):
     if title and len(title.strip()) > 160:
         raise HTTPException(status_code=422, detail='Recording title is too long')
+    if recording_mode not in {'solo', 'conversation'}:
+        raise HTTPException(status_code=422, detail='Recording mode must be solo or conversation')
     session_id, session_dir = create_session_dir(title=title)
-    source_path = session_dir / 'upload.bin'
+    source_path = session_paths(session_dir)['source_audio']
+    update_processing_state(
+        session_dir,
+        recording_mode=recording_mode,
+        original_filename=file.filename or '',
+        original_content_type=file.content_type or '',
+        speaker_processing_status='pending' if recording_mode == 'conversation' else 'not_required',
+        speaker_review_status='pending' if recording_mode == 'conversation' else 'not_required',
+    )
     total = 0
     try:
         with source_path.open('wb') as buffer:
@@ -249,7 +265,6 @@ async def upload_recording(file: UploadFile = File(...), title: str | None = For
         shutil.rmtree(session_dir, ignore_errors=True)
         logger.error('ffmpeg conversion failed for session=%s: %s', session_id, completed.stderr[-2000:])
         raise HTTPException(status_code=422, detail='The uploaded file could not be converted to audio')
-    source_path.unlink(missing_ok=True)
     probe = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', str(flac_path)]
     try:
         duration_result = await run_in_threadpool(
@@ -266,10 +281,128 @@ async def upload_recording(file: UploadFile = File(...), title: str | None = For
     if duration <= 0 or duration > settings.max_upload_seconds:
         shutil.rmtree(session_dir, ignore_errors=True)
         raise HTTPException(status_code=413, detail='The recording duration exceeds the configured limit')
+    update_processing_state(session_dir, duration_seconds=round(duration, 3), source_bytes=total)
     return RecordingUploadResponse(
         session_id=session_id,
-        message='Recording saved as FLAC',
+        message=(
+            'Conversation saved and waiting for speaker recognition'
+            if recording_mode == 'conversation'
+            else 'Recording saved and waiting for local transcription'
+        ),
+        recording_mode=recording_mode,
     )
+
+
+@app.get('/api/speakers', response_model=list[SpeakerProfile])
+def get_speakers():
+    return list_speakers()
+
+
+@app.post('/api/speakers', response_model=SpeakerProfile)
+def post_speaker(payload: SpeakerCreate):
+    return create_speaker(payload)
+
+
+@app.get('/api/sessions/{session_id}/speaker-review')
+def get_speaker_review(session_id: str):
+    session_dir = safe_session_dir(session_id)
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail='Session does not exist')
+    try:
+        return speaker_review(session_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.put('/api/sessions/{session_id}/speaker-assignments')
+async def put_speaker_assignments(session_id: str, payload: SpeakerAssignmentsUpdate):
+    session_dir = safe_session_dir(session_id)
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail='Session does not exist')
+    try:
+        return await run_in_threadpool(
+            apply_speaker_assignments,
+            session_dir,
+            [assignment.model_dump(mode='json') for assignment in payload.assignments],
+        )
+    except (SpeakerWorkflowError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get('/api/sessions/{session_id}/speaker-samples/{cluster_id}')
+async def get_speaker_sample(session_id: str, cluster_id: str):
+    session_dir = safe_session_dir(session_id)
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail='Session does not exist')
+    try:
+        path = await run_in_threadpool(speaker_sample, session_dir, cluster_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SpeakerWorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FileResponse(path, media_type='audio/wav', filename=f'{cluster_id}.wav')
+
+
+@app.post('/api/speakers/{speaker_id}/avatar/upload')
+async def upload_speaker_avatar(
+    speaker_id: str,
+    file: UploadFile = File(...),
+    kind: str = Form(default='avatar'),
+):
+    if kind not in {'avatar', 'photo'}:
+        raise HTTPException(status_code=422, detail='Choose avatar or photo')
+    try:
+        from services.speakers import get_speaker_record
+
+        get_speaker_record(speaker_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail='Speaker does not exist') from exc
+    temporary = Path(settings.tmp_dir) / f'avatar-upload-{uuid.uuid4().hex}.bin'
+    total = 0
+    try:
+        with temporary.open('wb') as handle:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > settings.max_avatar_upload_bytes:
+                    raise HTTPException(status_code=413, detail='Image exceeds the configured upload limit')
+                handle.write(chunk)
+        return await run_in_threadpool(
+            store_speaker_image,
+            speaker_id,
+            temporary,
+            kind=kind,
+            original_name=file.filename or 'image',
+        )
+    except AvatarWorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@app.post('/api/speakers/{speaker_id}/avatar/generate', response_model=AvatarJobResponse)
+def generate_speaker_avatar(speaker_id: str, payload: AvatarGenerationRequest):
+    if not payload.confirm_image_rights:
+        raise HTTPException(status_code=422, detail='Confirm that you may use this face photo')
+    try:
+        validate_avatar_generation(speaker_id)
+        job = job_manager.create(mode=f'avatar-{speaker_id}', message='Queued avatar illustration')
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail='Speaker does not exist') from exc
+    except AvatarWorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (ValueError, JobConflictError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    job_manager.run_in_thread(job.id, lambda: generate_avatar(job.id, speaker_id))
+    return AvatarJobResponse(job_id=job.id, status=job.status, detail=job.message)
+
+
+@app.get('/api/speakers/{speaker_id}/avatar')
+def get_speaker_avatar(speaker_id: str):
+    try:
+        path = active_avatar_path(speaker_id)
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path, media_type='image/webp')
 
 
 @app.get('/api/recordings/summary')

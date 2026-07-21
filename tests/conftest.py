@@ -21,6 +21,7 @@ os.environ.update(
         'FEEDBACK_PATH': str(TEST_ROOT / 'appdata' / 'answer_feedback.jsonl'),
         'GENERATION_AUDIT_PATH': str(TEST_ROOT / 'appdata' / 'generation_audit.jsonl'),
         'VOICE_DIR': str(TEST_ROOT / 'appdata' / 'voice'),
+        'SPEAKERS_DIR': str(TEST_ROOT / 'appdata' / 'speakers'),
         'MAX_UPLOAD_SECONDS': '14400',
         'TRUSTED_HOSTS': 'localhost,127.0.0.1,testserver',
         'ALLOW_RUNTIME_CLOUD_KEY': 'true',

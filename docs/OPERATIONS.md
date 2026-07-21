@@ -40,6 +40,8 @@ Long local generations emit a server-sent-event heartbeat every 15 seconds. Upst
 - Cloud generation never activates as an automatic fallback.
 - Selecting OpenAI changes only Talk response generation. Retrieval still uses the existing local `embeddinggemma` index, and TTS still uses the local voice bridge.
 - New recordings remain in the memory queue until the user explicitly confirms **Prepare all memories**. The warning states that Here I Am is unavailable for the duration. The batch runs serially, uses local `gemma4:e4b` for metadata and local `embeddinggemma` for vectors, and unloads both when complete. `/api/memory-batch/status` reports the queue, active job, models, and the hard-coded `openai_embedding_enabled: false` boundary.
+- Conversation recordings additionally require `SPEAKER_DIARIZATION_PROVIDER=openai`, `SPEAKER_DIARIZATION_MODEL=gpt-4o-transcribe-diarize`, and the same protected OpenAI credential. Their compact audio analysis copy is sent only for speaker-aware transcription. Unknown voices pause for user review; neither metadata generation nor embedding begins until one memory subject is confirmed.
+- Speaker avatar generation uses `AVATAR_IMAGE_MODEL=gpt-image-2`. It requires a source photo and an explicit rights checkbox. The source photo and existing art reference are sent to OpenAI; uploaded finished avatars never require cloud processing.
 
 ## Performance profile
 

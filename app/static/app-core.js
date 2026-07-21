@@ -22,6 +22,7 @@ const state = {
   fetchAnimations: [], fetchSitTimer: null, fetchSitResolve: null,
   activityFetchHeld: false, voiceFetchHeld: false,
   memoryBatch: null, batchWatching: false, batchPollTimer: null,
+  speakers: [], activeSpeakerId: null, activeSpeakerReviewId: null,
 };
 
 async function api(url, options = {}) {

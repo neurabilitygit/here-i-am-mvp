@@ -32,6 +32,9 @@ def session_summary(session_path: Path) -> SessionSummary:
         audio_bytes=paths['audio'].stat().st_size if paths['audio'].exists() else 0,
         transcript_bytes=paths['transcript'].stat().st_size if paths['transcript'].exists() else 0,
         updated_at=_modified_at(list(paths.values())),
+        recording_mode=state.get('recording_mode', 'solo'),
+        speaker_review_status=state.get('speaker_review_status', 'not_required'),
+        speaker_count=int(state.get('speaker_count', 1)),
     )
 
 

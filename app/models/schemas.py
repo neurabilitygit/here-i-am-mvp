@@ -13,6 +13,7 @@ def utc_now() -> datetime:
 class RecordingUploadResponse(BaseModel):
     session_id: str
     message: str
+    recording_mode: Literal['solo', 'conversation'] = 'solo'
 
 
 class JobProgress(BaseModel):
@@ -112,6 +113,9 @@ class SessionSummary(BaseModel):
     audio_bytes: int = 0
     transcript_bytes: int = 0
     updated_at: datetime | None = None
+    recording_mode: Literal['solo', 'conversation'] = 'solo'
+    speaker_review_status: str = 'not_required'
+    speaker_count: int = 1
 
 
 class SessionDetail(SessionSummary):
@@ -123,6 +127,43 @@ class SessionDetail(SessionSummary):
 class TranscriptUpdate(BaseModel):
     transcript: str = Field(min_length=1)
     reason: str = Field(default='manual correction', max_length=500)
+
+
+class SpeakerCreate(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+    default_role: Literal['memory_subject', 'interviewer', 'other'] = 'other'
+
+
+class SpeakerProfile(BaseModel):
+    speaker_id: str
+    display_name: str
+    default_role: Literal['memory_subject', 'interviewer', 'other'] = 'other'
+    avatar_url: str | None = None
+    voice_reference_ready: bool = False
+    source_photo_ready: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SpeakerAssignment(BaseModel):
+    cluster_id: str = Field(min_length=1, max_length=100)
+    speaker_id: str | None = Field(default=None, max_length=100)
+    display_name: str | None = Field(default=None, max_length=80)
+    role: Literal['memory_subject', 'interviewer', 'other']
+
+
+class SpeakerAssignmentsUpdate(BaseModel):
+    assignments: list[SpeakerAssignment] = Field(min_length=1, max_length=8)
+
+
+class AvatarGenerationRequest(BaseModel):
+    confirm_image_rights: bool
+
+
+class AvatarJobResponse(BaseModel):
+    job_id: str
+    status: str
+    detail: str
 
 
 class ReconciliationIssue(BaseModel):

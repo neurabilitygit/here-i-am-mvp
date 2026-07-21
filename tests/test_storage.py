@@ -19,7 +19,7 @@ def test_session_creation_is_unique_and_versioned():
     assert first_id != second_id
     assert first.exists() and second.exists()
     state = json.loads(session_paths(first)['state'].read_text())
-    assert state['state_version'] == 3
+    assert state['state_version'] == 4
     assert state['recorded'] is True
 
 

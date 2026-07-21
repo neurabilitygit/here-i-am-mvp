@@ -148,6 +148,22 @@ def test_memory_batch_failure_remains_visible_and_retryable():
 
     assert 'id="memory-queue-error"' in template
     assert "queue.last_job?.status==='error'" in script
+    assert "onlyReview?'Name voices first'" in script
     assert "failed?'Try again':'Prepare all memories'" in script
     assert 'Nothing was lost, and it is safe to try again.' in script
     assert "byId('library-status').textContent=outcome" in script
+
+
+def test_conversation_recording_has_voice_review_and_per_speaker_avatar_controls():
+    root = Path(__file__).parents[1]
+    script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
+    template = (root / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+
+    assert 'id="record-mode-conversation"' in template
+    assert 'id="import-mode-conversation"' in template
+    assert 'id="speaker-review-dialog"' in template
+    assert 'id="speaker-avatar-dialog"' in template
+    assert 'id="speaker-photo-consent"' in template
+    assert "form.append('recording_mode'" in script
+    assert '/speaker-assignments' in script
+    assert '/avatar/generate' in script

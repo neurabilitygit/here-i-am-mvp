@@ -28,6 +28,7 @@ def ensure_directories() -> None:
         Path(settings.exports_dir),
         Path(settings.archive_dir),
         Path(settings.voice_dir),
+        Path(settings.speakers_dir),
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -42,7 +43,7 @@ def create_session_dir(title: str | None = None) -> tuple[str, Path]:
     save_json(
         session_path / 'processing_state.json',
         {
-            'state_version': 3,
+            'state_version': 4,
             'session_id': session_id,
             'recorded': True,
             'transcribed': False,
@@ -52,6 +53,9 @@ def create_session_dir(title: str | None = None) -> tuple[str, Path]:
             'analysis_status': 'pending',
             'embedding_status': 'pending',
             'active_content_version': None,
+            'recording_mode': 'solo',
+            'speaker_processing_status': 'not_required',
+            'speaker_review_status': 'not_required',
             'updated_at': datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -84,7 +88,7 @@ def update_processing_state(session_path: Path, **updates: Any) -> None:
     state_path = session_path / 'processing_state.json'
     state = load_json(state_path) if state_path.exists() else {}
     state.update(updates)
-    state['state_version'] = max(int(state.get('state_version', 2)), 3)
+    state['state_version'] = max(int(state.get('state_version', 2)), 4)
     state['updated_at'] = datetime.now(timezone.utc).isoformat()
     save_json(state_path, state)
 
@@ -92,7 +96,13 @@ def update_processing_state(session_path: Path, **updates: Any) -> None:
 def session_paths(session_path: Path) -> dict[str, Path]:
     return {
         'audio': session_path / 'recording.flac',
+        'source_audio': session_path / 'recording.source',
         'transcript': session_path / 'transcript.md',
+        'asr_segments': session_path / 'asr.segments.json',
+        'diarization': session_path / 'diarization.json',
+        'speaker_assignments': session_path / 'speaker_assignments.json',
+        'transcript_turns': session_path / 'transcript.turns.json',
+        'memory_units': session_path / 'memory_units.jsonl',
         'metadata': session_path / 'metadata.json',
         'chunks': session_path / 'chunks.jsonl',
         'state': session_path / 'processing_state.json',
