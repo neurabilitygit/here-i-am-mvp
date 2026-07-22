@@ -18,6 +18,7 @@ from services.storage import atomic_write_text
 
 
 logger = logging.getLogger(__name__)
+PUBLIC_FAILURE_MESSAGE = 'Background job stopped before it could finish. Nothing was deleted; review local logs and retry.'
 
 
 class JobConflictError(RuntimeError):
@@ -46,6 +47,21 @@ class JobManager:
                 job.message = 'Interrupted by application restart; safe to retry'
                 job.completed = True
                 job.updated_at = datetime.now(timezone.utc)
+                self._save(job)
+            elif job.status == 'error' and (
+                job.message != PUBLIC_FAILURE_MESSAGE
+                or set(job.result) - {'error_code', 'exception_type'}
+                or job.result.get('error_code') != 'background_job_failed'
+            ):
+                # Older releases persisted raw provider exceptions, which could
+                # contain transcript fragments. Preserve operational state and
+                # timing while redacting that legacy payload on first load.
+                job.message = PUBLIC_FAILURE_MESSAGE
+                job.error = 'background_job_failed'
+                job.result = {
+                    'error_code': 'background_job_failed',
+                    'exception_type': 'LegacyJobError',
+                }
                 self._save(job)
             self._jobs[job.id] = job
 
@@ -133,7 +149,7 @@ class JobManager:
                 self.update(
                     job_id,
                     status='error',
-                    message='Background job stopped before it could finish. Nothing was deleted; review local logs and retry.',
+                    message=PUBLIC_FAILURE_MESSAGE,
                     completed=True,
                     error='background_job_failed',
                     result={'error_code': 'background_job_failed', 'exception_type': type(exc).__name__},

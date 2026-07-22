@@ -1,7 +1,9 @@
 import time
+import uuid
 
 import pytest
 
+from models.schemas import JobProgress
 from services.jobs import JobConflictError, JobManager
 
 
@@ -38,3 +40,27 @@ def test_background_job_errors_do_not_expose_internal_details():
     assert failed.status == 'error'
     assert '/private/path' not in failed.message
     assert failed.result['error_code'] == 'background_job_failed'
+
+
+def test_legacy_job_failures_are_redacted_when_loaded():
+    manager = JobManager()
+    job_id = str(uuid.uuid4())
+    path = manager._root / f'{job_id}.json'
+    legacy = JobProgress(
+        id=job_id,
+        mode='legacy-failure',
+        status='error',
+        message='Background job failed: private transcript fragment',
+        completed=True,
+        result={'error': 'private transcript fragment'},
+    )
+    path.write_text(legacy.model_dump_json(indent=2), encoding='utf-8')
+
+    loaded = JobManager().get(job_id)
+
+    assert loaded.message.startswith('Background job stopped')
+    assert loaded.result == {
+        'error_code': 'background_job_failed',
+        'exception_type': 'LegacyJobError',
+    }
+    assert 'private transcript fragment' not in path.read_text(encoding='utf-8')
