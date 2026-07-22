@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 PID_FILE = Path(os.environ.get('OLLAMA_PID_FILE', '/Volumes/Personal/here-i-am/run/ollama.pid'))
 OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://127.0.0.1:11434')
+APP_BUILD_COMMIT = os.environ.get('APP_BUILD_COMMIT', 'unknown')
 app = FastAPI(title='Ollama Control Bridge')
 LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', '')
 
@@ -76,6 +77,7 @@ def status():
     pid = read_pid()
     return {
         'status': 'running' if api_reachable() else 'stopped',
+        'build_commit': APP_BUILD_COMMIT,
         'pid': pid,
         'detail': 'Ollama API reachable' if api_reachable() else 'Ollama API not reachable',
     }

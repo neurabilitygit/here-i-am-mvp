@@ -34,6 +34,7 @@ CACHE_LIMIT = max(8, int(os.environ.get('QWEN_TTS_CACHE_LIMIT', '96')))
 CACHE_MAX_BYTES = max(128 * 1024 * 1024, int(os.environ.get('QWEN_TTS_CACHE_MAX_BYTES', str(2 * 1024 * 1024 * 1024))))
 CACHE_DIR = os.environ.get('QWEN_TTS_CACHE_DIR', '')
 CACHE_SCHEMA_VERSION = 'sentence-foundry-v3-clean-boundaries'
+APP_BUILD_COMMIT = os.environ.get('APP_BUILD_COMMIT', 'unknown')
 app = FastAPI(title='Here I Am MLX voice bridge')
 logger = logging.getLogger('here_i_am_voice')
 LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', '')
@@ -393,6 +394,7 @@ def health():
         segments_complete = _active_segments_complete
     return {
         'status': 'ok',
+        'build_commit': APP_BUILD_COMMIT,
         'engine': 'qwen3-tts-mlx',
         'model': MODEL_ID,
         'model_loaded': _model is not None,

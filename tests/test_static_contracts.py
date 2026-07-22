@@ -35,7 +35,9 @@ def test_native_mutation_bridges_require_an_explicit_auth_probe():
         assert "@app.post('/auth/check')" in bridge
         assert "request.method != 'GET'" in bridge
         assert "X-Here-I-Am-Local" in bridge
+        assert "'build_commit': APP_BUILD_COMMIT" in bridge
     assert '"$url/auth/check"' in launcher
+    assert 'bridge_build_matches' in launcher
 
 
 def test_frontend_ignores_stale_chat_completions_and_batches_screen_reader_updates():

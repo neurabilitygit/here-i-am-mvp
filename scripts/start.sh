@@ -43,6 +43,12 @@ bridge_token_works() {
   [[ "$status" == '200' ]]
 }
 
+bridge_build_matches() {
+  local health_url="$1"
+  curl -fsS --max-time 2 "$health_url" 2>/dev/null \
+    | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("build_commit") == sys.argv[1] else 1)' "$APP_BUILD_COMMIT"
+}
+
 restart_stale_bridge() {
   local service="$1" url="$2" health_url="$3" pid_file expected command
   pid_file="$RUN_DIR/$service.pid"
@@ -51,7 +57,8 @@ restart_stale_bridge() {
     ollama-control) expected='ollama_control_bridge' ;;
     *) echo "Unknown bridge service: $service" >&2; exit 1 ;;
   esac
-  if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 && ! bridge_token_works "$url"; then
+  if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 \
+    && { ! bridge_token_works "$url" || ! bridge_build_matches "$health_url"; }; then
     if [[ -s "$pid_file" ]]; then
       local pid
       pid="$(tr -cd '0-9' <"$pid_file")"
