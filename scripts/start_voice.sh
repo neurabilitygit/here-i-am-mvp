@@ -12,14 +12,29 @@ REQUIREMENTS_HASH="$(shasum -a 256 "$REQUIREMENTS" | awk '{print $1}')"
 STAMP_FILE="$ENV_DIR/.here-i-am-requirements-sha256"
 
 if [[ ! -x "$ENV_DIR/bin/python" || ! -f "$STAMP_FILE" || "$(cat "$STAMP_FILE" 2>/dev/null || true)" != "$REQUIREMENTS_HASH" ]]; then
-  NEXT_ENV="$ENV_DIR.new.$$"
-  rm -rf "$NEXT_ENV"
-  python3.12 -m venv "$NEXT_ENV"
-  "$NEXT_ENV/bin/pip" install -U pip
-  "$NEXT_ENV/bin/pip" install -r "$REQUIREMENTS"
-  printf '%s\n' "$REQUIREMENTS_HASH" >"$NEXT_ENV/.here-i-am-requirements-sha256"
-  rm -rf "$ENV_DIR"
-  mv "$NEXT_ENV" "$ENV_DIR"
+  PREVIOUS_ENV="$ENV_DIR.previous.$$"
+  rm -rf "$PREVIOUS_ENV"
+  if [[ -e "$ENV_DIR" ]]; then
+    mv "$ENV_DIR" "$PREVIOUS_ENV"
+  fi
+  restore_previous_env() {
+    local exit_code=$?
+    trap - EXIT
+    rm -rf "$ENV_DIR"
+    if [[ -e "$PREVIOUS_ENV" ]]; then
+      mv "$PREVIOUS_ENV" "$ENV_DIR"
+    fi
+    exit "$exit_code"
+  }
+  trap restore_previous_env EXIT
+  # Virtual-environment launchers embed absolute interpreter paths, so the
+  # environment must be created at its final location rather than moved there.
+  python3.12 -m venv "$ENV_DIR"
+  "$ENV_DIR/bin/pip" install -U pip
+  "$ENV_DIR/bin/pip" install -r "$REQUIREMENTS"
+  printf '%s\n' "$REQUIREMENTS_HASH" >"$STAMP_FILE"
+  trap - EXIT
+  rm -rf "$PREVIOUS_ENV"
 fi
 
 if curl -fsS --max-time 2 http://127.0.0.1:8779/health >/dev/null 2>&1; then

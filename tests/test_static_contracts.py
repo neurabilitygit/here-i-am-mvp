@@ -27,6 +27,15 @@ def test_native_bridges_are_detached_and_read_the_protected_token():
     assert 'exec "$SOURCE_DIR/scripts/start_voice.sh"' in runner
 
 
+def test_voice_environment_is_built_at_its_final_absolute_path():
+    root = Path(__file__).parents[1]
+    launcher = (root / 'scripts' / 'start_voice.sh').read_text(encoding='utf-8')
+
+    assert 'python3.12 -m venv "$ENV_DIR"' in launcher
+    assert 'mv "$NEXT_ENV" "$ENV_DIR"' not in launcher
+    assert 'restore_previous_env' in launcher
+
+
 def test_native_mutation_bridges_require_an_explicit_auth_probe():
     root = Path(__file__).parents[1]
     launcher = (root / 'scripts' / 'start.sh').read_text(encoding='utf-8')
