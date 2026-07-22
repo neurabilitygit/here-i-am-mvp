@@ -11,9 +11,17 @@ test.beforeEach(async ({page}) => {
     contentType: 'application/json',
     body: JSON.stringify({enabled: true, provider: 'local', reference_ready: true, bridge_ready: true}),
   }));
-  await page.goto('/');
+  const [experienceResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/api/experience') && response.request().method() === 'GET'),
+    page.goto('/'),
+  ]);
+  const experience = await experienceResponse.json();
   const onboarding = page.locator('#onboarding-dialog');
-  if (await onboarding.isVisible()) await page.locator('#onboarding-start').click();
+  if (!experience.preferences?.onboarding_complete) {
+    await expect(onboarding).toBeVisible();
+    await page.locator('#onboarding-start').click();
+    await expect(onboarding).toBeHidden();
+  }
 });
 
 test('primary controls remain interactive in WebKit', async ({page}) => {
