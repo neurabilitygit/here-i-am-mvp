@@ -16,8 +16,8 @@ case "${1:-}" in
     exec "$SOURCE_DIR/scripts/start_voice.sh"
     ;;
   ollama-control)
-    [[ -x "$VOICE_ENV/bin/uvicorn" ]] || { echo "Voice runtime is missing uvicorn." >&2; exit 1; }
-    exec "$VOICE_ENV/bin/uvicorn" scripts.ollama_control_bridge:app \
+    [[ -x "$VOICE_ENV/bin/python" ]] || { echo "Voice runtime is missing Python." >&2; exit 1; }
+    exec "$VOICE_ENV/bin/python" -m uvicorn scripts.ollama_control_bridge:app \
       --app-dir "$SOURCE_DIR" --host 127.0.0.1 --port 8778
     ;;
   *)

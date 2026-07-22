@@ -25,6 +25,7 @@ def test_native_bridges_are_detached_and_read_the_protected_token():
     assert daemonizer.count('os.fork()') == 2
     assert 'local_bridge_token' in runner
     assert 'exec "$SOURCE_DIR/scripts/start_voice.sh"' in runner
+    assert '"$VOICE_ENV/bin/python" -m uvicorn' in runner
 
 
 def test_voice_environment_is_built_at_its_final_absolute_path():
@@ -34,6 +35,7 @@ def test_voice_environment_is_built_at_its_final_absolute_path():
     assert 'python3.12 -m venv "$ENV_DIR"' in launcher
     assert 'mv "$NEXT_ENV" "$ENV_DIR"' not in launcher
     assert 'restore_previous_env' in launcher
+    assert '"$ENV_DIR/bin/python" -m uvicorn' in launcher
 
 
 def test_native_mutation_bridges_require_an_explicit_auth_probe():

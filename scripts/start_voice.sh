@@ -47,5 +47,5 @@ if pgrep -f "uvicorn scripts.(qwen_voice_bridge|mlx_voice_bridge):app" >/dev/nul
   exit 1
 fi
 
-exec "$ENV_DIR/bin/uvicorn" scripts.mlx_voice_bridge:app \
+exec "$ENV_DIR/bin/python" -m uvicorn scripts.mlx_voice_bridge:app \
   --app-dir "$ROOT" --host 127.0.0.1 --port 8779
