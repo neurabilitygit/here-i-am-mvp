@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     fidelity_profile_path: str = '/data/appdata/speaker_fingerprint.json'
     feedback_path: str = '/data/appdata/answer_feedback.jsonl'
     generation_audit_path: str = '/data/appdata/generation_audit.jsonl'
+    activity_event_path: str = '/data/appdata/logs/activity_events.jsonl'
     voice_dir: str = '/data/appdata/voice'
     speakers_dir: str = '/data/appdata/speakers'
     ollama_base_url: str = 'http://host.docker.internal:11434'

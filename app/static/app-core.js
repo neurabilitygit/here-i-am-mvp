@@ -1,5 +1,6 @@
 (() => {
 const byId = (id) => document.getElementById(id);
+const pageId = globalThis.crypto?.randomUUID?.() || `page-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const state = {
   preferences: null, sessions: [], activeSessionId: null,
@@ -13,6 +14,7 @@ const state = {
   voiceAbort: null, voiceRequestId: null, voiceTimeout: null,
   voicePreparing: false, voiceTimedOut: false, voiceSources: [], voiceNextTime: 0,
   voicePlaying: false, voiceStoppedByUser: false, voicePlaybackTimer: null,
+  voicePlaybackStartedAt: 0,
   voicePrerenderAbort: null, voicePrerenderRequestId: null, voicePrerenderText: '',
   voicePrerenderBlob: null, voicePrerenderFetchHeld: false,
   audioContext: null, audioAnalyser: null, audioBufferSource: null, audioAnimation: null,
@@ -23,7 +25,26 @@ const state = {
   activityFetchHeld: false, voiceFetchHeld: false,
   memoryBatch: null, batchWatching: false, batchPollTimer: null,
   speakers: [], activeSpeakerId: null, activeSpeakerReviewId: null,
+  pageId, activitySequence: 0, chatRequestId: null,
 };
+
+function activity(event, details = {}) {
+  state.activitySequence += 1;
+  const payload = {
+    event,
+    page_id: state.pageId,
+    sequence: state.activitySequence,
+    scene: document.body.dataset.scene || '',
+    occurred_at: new Date().toISOString(),
+    details,
+  };
+  fetch('/api/activity-events', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+    keepalive: true,
+  }).catch(() => {});
+}
 
 async function api(url, options = {}) {
   const animate = performance.now() < state.fetchButtonUntil || state.fetchTaskCount > 0;
@@ -39,5 +60,5 @@ async function api(url, options = {}) {
   }
 }
 
-window.HereIAmCore = Object.freeze({byId, state, api});
+window.HereIAmCore = Object.freeze({byId, state, api, activity});
 })();

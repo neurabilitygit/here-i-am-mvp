@@ -62,6 +62,15 @@ class GenericStatus(BaseModel):
     detail: str
 
 
+class ClientActivityEvent(BaseModel):
+    event: str = Field(min_length=1, max_length=80, pattern=r'^[a-z][a-z0-9_]*$')
+    page_id: str = Field(min_length=1, max_length=80, pattern=r'^[A-Za-z0-9_-]+$')
+    sequence: int = Field(ge=1, le=1_000_000_000)
+    scene: str = Field(default='', max_length=40, pattern=r'^[a-z0-9_-]*$')
+    occurred_at: datetime = Field(default_factory=utc_now)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatSource(BaseModel):
     session_id: str
     title: str = ''

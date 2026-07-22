@@ -24,7 +24,7 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 from config import settings
-from models.schemas import AnswerFeedback, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, GenericStatus, PreferencesUpdate, ProviderStatus, RecordingUploadResponse, ReconciliationReport, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
+from models.schemas import AnswerFeedback, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, ClientActivityEvent, GenericStatus, PreferencesUpdate, ProviderStatus, RecordingUploadResponse, ReconciliationReport, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
 from services.jobs import JobConflictError, job_manager
 from services.library import build_session_export, create_structured_backup, get_session, list_sessions, reconciliation_report
 from services.ollama_client import ollama_client
@@ -36,6 +36,7 @@ from services.storage import archive_session, create_session_dir, ensure_directo
 from services.speakers import SpeakerWorkflowError, apply_speaker_assignments, create_speaker, list_speakers, speaker_review, speaker_sample
 from services.avatars import AvatarWorkflowError, active_avatar_path, generate_avatar, store_speaker_image, validate_avatar_generation
 from services.voice import LOCAL_BRIDGE_HEADERS, cancel_synthesis_stream, list_voice_candidates, load_voice_status, prepare_voice_reference, revoke_voice, synthesize
+from services.activity import recent_activity, record_activity
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -83,10 +84,12 @@ async def request_observability(request: Request, call_next):
     request_id = request.headers.get('X-Request-ID', '')
     if not request_id or len(request_id) > 80 or not request_id.replace('-', '').replace('_', '').isalnum():
         request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
     origin = request.headers.get('origin')
     batch_allowed = (
         request.method == 'GET'
         or request.url.path == '/api/memory-batch/start'
+        or request.url.path == '/api/activity-events'
         or request.url.path.startswith('/api/voice/cancel/')
     )
     if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and origin and origin not in settings.cors_origin_list:
@@ -128,6 +131,17 @@ def health() -> GenericStatus:
     if not Path(settings.data_root).exists():
         raise HTTPException(status_code=500, detail=f'Data root is missing: {settings.data_root}')
     return GenericStatus(status='ok', detail='Application is healthy')
+
+
+@app.post('/api/activity-events', status_code=202)
+def post_activity_event(payload: ClientActivityEvent, request: Request):
+    record_activity(payload, request_id=getattr(request.state, 'request_id', ''))
+    return {'status': 'accepted'}
+
+
+@app.get('/api/activity-events')
+def get_activity_events(limit: int = Query(default=100, ge=1, le=500)):
+    return {'events': recent_activity(limit)}
 
 
 @app.get('/api/ready', response_model=GenericStatus)

@@ -36,6 +36,29 @@ def test_cross_origin_mutation_is_rejected():
     assert response.status_code == 403
 
 
+def test_activity_events_are_persisted_without_prompt_or_answer_text(monkeypatch, tmp_path):
+    activity_path = tmp_path / 'activity-events.jsonl'
+    monkeypatch.setattr(settings, 'activity_event_path', str(activity_path))
+    response = client.post('/api/activity-events', json={
+        'event': 'answer_completed',
+        'page_id': 'page-test-1',
+        'sequence': 3,
+        'scene': 'talk',
+        'details': {
+            'request_id': 'chat-test-1',
+            'answer_chars': 240,
+            'answer_text': 'This must never be logged.',
+            'question_text': 'Neither should this.',
+        },
+    })
+    assert response.status_code == 202
+    events = client.get('/api/activity-events?limit=5').json()['events']
+    assert events[-1]['event'] == 'answer_completed'
+    assert events[-1]['details']['answer_chars'] == 240
+    assert 'answer_text' not in events[-1]['details']
+    assert 'question_text' not in events[-1]['details']
+
+
 def test_session_and_reconciliation_contracts():
     response = client.get('/api/sessions')
     assert response.status_code == 200

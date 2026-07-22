@@ -93,6 +93,29 @@ def test_safari_recording_waits_for_the_final_audio_blob():
     assert "The microphone stopped. Saving everything captured so far" in script
 
 
+def test_background_recording_completion_does_not_steal_the_talk_scene():
+    root = Path(__file__).parents[1]
+    script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
+
+    assert "const sceneAtCompletion = document.body.dataset.scene || ''" in script
+    assert "if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed')" in script
+    assert "showScene('memories');" not in script
+
+
+def test_answer_state_and_privacy_safe_activity_are_recoverable():
+    root = Path(__file__).parents[1]
+    script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
+    core = (root / 'app' / 'static' / 'app-core.js').read_text(encoding='utf-8')
+
+    assert "const ANSWER_STORAGE_KEY = 'here-i-am.current-answer.v1'" in script
+    assert 'persistCompletedAnswer();' in script
+    assert 'restoreCompletedAnswer()' in script
+    assert "activity('scene_changed'" in script
+    assert "activity('answer_completed'" in script
+    assert "activity('voice_prepare_failed'" in script
+    assert "fetch('/api/activity-events'" in core
+
+
 def test_talk_card_does_not_render_memory_source_chips():
     root = Path(__file__).parents[1]
     script_path = root / 'app' / 'static' / 'app.js'

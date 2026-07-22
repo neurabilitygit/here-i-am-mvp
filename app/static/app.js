@@ -1,4 +1,5 @@
-const {byId, state, api} = window.HereIAmCore;
+const {byId, state, api, activity} = window.HereIAmCore;
+const ANSWER_STORAGE_KEY = 'here-i-am.current-answer.v1';
 
 function showFetchCompanion() {
   const companion = byId('fetch-companion');
@@ -186,7 +187,8 @@ function setPresence(label, avatarState = 'resting') {
   document.body.dataset.avatarState = avatarState;
 }
 
-function showScene(name) {
+function showScene(name, reason = 'programmatic') {
+  const previous = document.body.dataset.scene || '';
   document.body.dataset.scene = name;
   document.querySelectorAll('[data-scene-panel]').forEach((panel) => {
     const active = panel.dataset.scenePanel === name;
@@ -197,6 +199,39 @@ function showScene(name) {
   if (name === 'memories') Promise.all([refreshLibrary(), refreshMemoryQueue(), refreshSpeakers()]);
   if (name === 'talk') byId('chat-question').focus();
   else window.requestAnimationFrame(() => byId(`${name}-title`)?.focus());
+  if (previous !== name) activity('scene_changed', {
+    from: previous, to: name, reason, has_answer: Boolean(state.lastAnswer),
+    recording_active: Boolean(state.mediaRecorder && state.mediaRecorder.state !== 'inactive'),
+    voice_preparing: Boolean(state.voicePreparing || state.voicePrerenderRequestId),
+  });
+}
+
+function persistCompletedAnswer() {
+  if (!state.lastAnswer) return;
+  try {
+    sessionStorage.setItem(ANSWER_STORAGE_KEY, JSON.stringify({
+      answer: state.lastAnswer,
+      mode: state.lastMode,
+      provider: state.lastProvider,
+      saved_at: new Date().toISOString(),
+    }));
+  } catch (_) {}
+}
+
+function restoreCompletedAnswer() {
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(ANSWER_STORAGE_KEY) || 'null'); } catch (_) { saved = null; }
+  if (!saved?.answer || typeof saved.answer !== 'string') return false;
+  state.lastAnswer = saved.answer.slice(0, 40000);
+  state.lastMode = typeof saved.mode === 'string' ? saved.mode : '';
+  state.lastProvider = typeof saved.provider === 'string' ? saved.provider : '';
+  byId('answer-text').textContent = state.lastAnswer;
+  byId('answer-card').hidden = false;
+  byId('answer-card').classList.add('complete');
+  byId('answer-announcement').textContent = 'Your previous written answer was restored after the page reloaded.';
+  renderTalkProviderBadge(state.lastProvider || state.preferences?.provider);
+  updateSpeakButton();
+  return true;
 }
 
 function setActivity(visible, title = '', detail = '') {
@@ -389,14 +424,19 @@ function parseSSEBlock(block) {
 async function askQuestion(question) {
   const value = question.trim();
   if (!value) return;
+  const startedAt = performance.now();
   cancelVoicePrerender();
   beginFetchTask();
   state.chatAbort?.abort();
   const generation = ++state.chatGeneration;
   const controller = new AbortController();
   state.chatAbort = controller;
+  const requestId = globalThis.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  state.chatRequestId = requestId;
   state.lastQuestion = value;
   state.lastAnswer = '';
+  try { sessionStorage.removeItem(ANSWER_STORAGE_KEY); } catch (_) {}
+  activity('question_submitted', {request_id: requestId, question_chars: value.length, generation});
   byId('chat-question').value = '';
   growQuestionBox();
   byId('answer-card').hidden = false;
@@ -411,7 +451,7 @@ async function askQuestion(question) {
   let buffer = '';
   try {
     const response = await fetch('/api/chat/stream', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
+      method: 'POST', headers: {'Content-Type':'application/json', 'X-Request-ID': requestId},
       body: JSON.stringify({question:value}), signal: controller.signal,
     });
     if (generation !== state.chatGeneration) return;
@@ -448,6 +488,11 @@ async function askQuestion(question) {
     byId('answer-card').classList.add('complete');
     byId('answer-announcement').textContent = 'Answer ready. The written answer appears above the answer controls.';
     byId('compare-answer').disabled = !state.lastAnswer || !state.cloudConfigured || state.lastProvider === 'memory';
+    persistCompletedAnswer();
+    activity('answer_completed', {
+      request_id: requestId, answer_chars: state.lastAnswer.length, provider: state.lastProvider,
+      mode: state.lastMode, duration_ms: Math.round(performance.now() - startedAt), generation,
+    });
     setPresence('Ready for another question', 'resting');
     if (state.lastProvider === 'memory') updateSpeakButton();
     else if (state.preferences.auto_speak && state.voice?.enabled && state.lastAnswer) await speakAnswer();
@@ -459,10 +504,15 @@ async function askQuestion(question) {
       byId('answer-card').classList.add('complete');
       setPresence('Something needs attention', 'resting');
       byId('answer-announcement').textContent = 'The answer could not be completed.';
+      activity('answer_failed', {
+        request_id: requestId, error_name: error.name || 'Error',
+        duration_ms: Math.round(performance.now() - startedAt), generation,
+      });
     }
   } finally {
     if (generation === state.chatGeneration) {
       state.chatAbort = null;
+      state.chatRequestId = null;
       byId('chat-send').disabled = false;
     }
     endFetchTask();
@@ -479,6 +529,8 @@ function clearAnswer() {
   state.lastAnswer = '';
   state.lastMode = '';
   state.lastProvider = '';
+  try { sessionStorage.removeItem(ANSWER_STORAGE_KEY); } catch (_) {}
+  activity('answer_cleared', {reason: 'clear_button'});
   byId('answer-text').textContent = '';
   byId('answer-announcement').textContent = '';
   byId('answer-card').classList.remove('complete');
@@ -613,12 +665,14 @@ async function startVoicePrerender() {
   cancelVoicePrerender();
   const text = state.lastAnswer;
   const requestId = globalThis.crypto?.randomUUID?.() || `voice-preview-${Date.now()}`;
+  const startedAt = performance.now();
   const controller = new AbortController();
   state.voicePrerenderText = text; state.voicePrerenderRequestId = requestId; state.voicePrerenderAbort = controller;
   state.voicePrerenderFetchHeld = true;
   updateSpeakButton();
   setPresence('Preparing your voice while you read', 'thinking');
   beginFetchTask();
+  activity('voice_prepare_started', {request_id: requestId, answer_chars: text.length, automatic: true});
   try {
     const response = await fetch('/api/voice/speak', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,speed:1,request_id:requestId}),signal:controller.signal});
     if (!response.ok) throw new Error('Background voice preparation did not complete');
@@ -626,9 +680,11 @@ async function startVoicePrerender() {
     if (state.voicePrerenderText === text && blob.size) {
       state.voicePrerenderBlob = blob;
       setPresence('Voice is ready to play', 'resting');
+      activity('voice_prepare_completed', {request_id: requestId, bytes: blob.size, duration_ms: Math.round(performance.now() - startedAt), automatic: true});
     }
-  } catch (_) {
+  } catch (error) {
     // Pre-rendering is optional; Play is re-enabled for a manual retry.
+    activity('voice_prepare_failed', {request_id: requestId, error_name: error.name || 'Error', duration_ms: Math.round(performance.now() - startedAt), automatic: true});
   } finally {
     if (state.voicePrerenderRequestId === requestId) {
       if (!state.voicePrerenderBlob) setPresence('Voice preparation paused — press Play to try again', 'resting');
@@ -658,8 +714,10 @@ async function playVoiceBlob(blob) {
   state.voiceTimeout = null;
   state.voicePreparing = false;
   state.voicePlaying = true;
+  state.voicePlaybackStartedAt = performance.now();
   source.onended = finishVoicePlayback;
   source.start(0);
+  activity('voice_play_started', {bytes: blob.size, duration_seconds: Math.round(audioBuffer.duration * 10) / 10});
   updateSpeakButton();
   setPresence('Playing your completed AI voice recording', 'speaking');
   animateAudio();
@@ -671,7 +729,9 @@ async function playVoiceFile(response) {
 }
 
 function finishVoicePlayback() {
+  activity('voice_play_completed', {duration_ms: Math.round(performance.now() - (state.voicePlaybackStartedAt || performance.now()))});
   state.voicePlaying = false;
+  state.voicePlaybackStartedAt = 0;
   state.audioBufferSource = null;
   state.voiceSources = [];
   window.cancelAnimationFrame(state.audioAnimation);
@@ -703,6 +763,7 @@ async function speakAnswer() {
     return;
   }
   const requestId = globalThis.crypto?.randomUUID?.() || `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const startedAt = performance.now();
   state.voiceRequestId = requestId;
   state.voiceAbort = new AbortController();
   state.voicePreparing = true;
@@ -715,6 +776,7 @@ async function speakAnswer() {
   byId('stop-speaking').setAttribute('aria-label', 'Cancel voice preparation');
   byId('stop-speaking').querySelector('span:last-child').textContent = 'Cancel';
   setPresence('Preparing voice — you can keep reading or ask another question', 'thinking');
+  activity('voice_prepare_started', {request_id: requestId, answer_chars: state.lastAnswer.length, automatic: false});
   state.voiceTimeout = window.setTimeout(() => {
     if (state.voicePreparing) setPresence('Your voice is still preparing — the written answer remains available', 'thinking');
   }, 20000);
@@ -722,8 +784,10 @@ async function speakAnswer() {
     const response = await fetch('/api/voice/speak', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:state.lastAnswer, speed:1, request_id:requestId}), signal:state.voiceAbort.signal});
     if (response.status === 409) throw new Error('A voice file is already being prepared. Please wait for it to finish.');
     if (!response.ok) throw new Error((await response.json()).detail || 'Voice generation failed');
+    activity('voice_prepare_completed', {request_id: requestId, bytes: Number(response.headers.get('content-length')) || 0, duration_ms: Math.round(performance.now() - startedAt), automatic: false});
     await playVoiceFile(response);
   } catch (error) {
+    activity('voice_prepare_failed', {request_id: requestId, error_name: error.name || 'Error', duration_ms: Math.round(performance.now() - startedAt), automatic: false});
     const message = error.name === 'AbortError'
       ? (state.voiceStoppedByUser
           ? 'Voice stopped. The written answer is still ready.'
@@ -829,6 +893,7 @@ async function startRecording() {
     });
     if(isSafari&&mimeType.includes('mp4'))state.mediaRecorder.start();else state.mediaRecorder.start(1000);
     console.info('[recording] started',{mimeType:state.mediaRecorder.mimeType||mimeType||'browser-default'});
+    activity('recording_started', {mime_type: state.mediaRecorder.mimeType || mimeType || 'browser-default'});
     state.recordStartedAt=Date.now();
     state.recordTimer=setInterval(updateRecordTime,500); updateRecordTime(); startRecordVisualizer(state.mediaStream);
     byId('record-start').classList.add('active'); byId('record-start').querySelector('span:last-child').textContent='Recording';
@@ -846,6 +911,7 @@ function pauseRecording(){
 function stopRecording(){
   if(!state.mediaRecorder||state.mediaRecorder.state==='inactive')return;
   state.recordStopRequested=true; clearInterval(state.recordTimer);
+  activity('recording_stop_requested', {duration_ms: Math.max(0, Date.now() - state.recordStartedAt)});
   byId('recording-status').textContent='Finishing and saving your memory…'; byId('record-pause').disabled=true; byId('record-stop').disabled=true;
   // Safari delivers its complete MP4 blob asynchronously after stop().
   // Keep the microphone track alive until the recorder's stop event fires.
@@ -861,6 +927,7 @@ async function finalizeRecording(){
   state.recordFinalizing=true; clearInterval(state.recordTimer); releaseRecordingStream();
   const unexpected=!state.recordStopRequested;
   console.info('[recording] stopped',{unexpected,chunks:state.recordedChunks.length,bytes:state.recordedChunks.reduce((total,chunk)=>total+chunk.size,0)});
+  activity('recording_stopped', {unexpected, chunks: state.recordedChunks.length, bytes: state.recordedChunks.reduce((total,chunk)=>total+chunk.size,0), duration_ms: Math.max(0, Date.now() - state.recordStartedAt)});
   if(unexpected)byId('recording-status').textContent='The microphone stopped. Saving everything captured so far…';
   await uploadRecording({unexpected});
 }
@@ -872,9 +939,13 @@ async function uploadRecording({unexpected=false}={}){
     form.append('file',new Blob(state.recordedChunks,{type}),type.includes('mp4')?'memory.m4a':'memory.webm');
     const title=byId('record-title').value.trim(); if(title)form.append('title',title);
     form.append('recording_mode',document.querySelector('input[name="record-mode"]:checked')?.value||'solo');
-    await api('/api/recordings/upload',{method:'POST',body:form});
-    resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value=''; showScene('memories'); await Promise.all([refreshLibrary(),refreshMemoryQueue()]);
-  }catch(error){console.error('[recording] save failed',error);byId('recording-status').textContent=`That memory was not saved. ${error.message}`;resetRecorder();}
+    const response = await api('/api/recordings/upload',{method:'POST',body:form});
+    const sceneAtCompletion = document.body.dataset.scene || '';
+    activity('recording_upload_completed', {unexpected, session_id: response.session_id, scene_at_completion: sceneAtCompletion});
+    resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value='';
+    if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed');
+    await Promise.all([refreshLibrary(),refreshMemoryQueue()]);
+  }catch(error){console.error('[recording] save failed',error);activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});byId('recording-status').textContent=`That memory was not saved. ${error.message}`;resetRecorder();}
 }
 
 function resetRecorder(){
@@ -1184,10 +1255,11 @@ async function runReconciliation(){byId('technical-status').textContent='Checkin
 async function createBackup(){byId('technical-status').textContent='Making a full safety copy…';try{const result=await api('/api/backups/structured',{method:'POST'});byId('technical-status').textContent=`Full safety copy ${result.backup_id} contains ${result.files} files.${result.warning?` ${result.warning}`:''}`;}catch(error){byId('technical-status').textContent=error.message;}}
 
 function bindEvents(){
-  window.addEventListener('pagehide',cancelVoiceOnPageExit);
+  window.addEventListener('pagehide',()=>{activity('page_hidden',{has_answer:Boolean(state.lastAnswer),voice_preparing:Boolean(state.voicePreparing||state.voicePrerenderRequestId)});cancelVoiceOnPageExit();});
+  document.addEventListener('visibilitychange',()=>activity(document.hidden?'page_became_hidden':'page_became_visible',{has_answer:Boolean(state.lastAnswer)}));
   document.addEventListener('click',(event)=>{const button=event.target.closest('button');if(button&&!button.disabled&&!button.closest('#fetch-companion'))pulseFetchCompanion();},true);
-  document.querySelectorAll('[data-go]').forEach((button)=>button.addEventListener('click',()=>showScene(button.dataset.go)));
-  byId('home-button').addEventListener('click',()=>showScene('talk'));byId('settings-button').addEventListener('click',()=>byId('settings-dialog').showModal());byId('avatar-button').addEventListener('click',()=>byId('avatar-dialog').showModal());
+  document.querySelectorAll('[data-go]').forEach((button)=>button.addEventListener('click',()=>showScene(button.dataset.go,'navigation_button')));
+  byId('home-button').addEventListener('click',()=>showScene('talk','home_button'));byId('settings-button').addEventListener('click',()=>byId('settings-dialog').showModal());byId('avatar-button').addEventListener('click',()=>byId('avatar-dialog').showModal());
   byId('text-size-button').addEventListener('click',async()=>{const order=['standard','large','largest'];state.preferences.text_scale=order[(order.indexOf(state.preferences.text_scale)+1)%order.length];applyPreferences();await api('/api/experience',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:state.preferences})});});
   byId('settings-save').addEventListener('click',()=>saveSettings());byId('setting-provider').addEventListener('change',saveProviderSelection);byId('avatar-save').addEventListener('click',saveAvatar);
   byId('chat-form').addEventListener('submit',(event)=>{event.preventDefault();askQuestion(byId('chat-question').value)});byId('chat-question').addEventListener('input',growQuestionBox);byId('chat-question').addEventListener('keydown',(event)=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();askQuestion(event.currentTarget.value)}});
@@ -1206,8 +1278,8 @@ function bindEvents(){
 
 async function initialize(){
   bindEvents();drawIdleWave();setupSpeechQuestion();
-  try{await loadExperience();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence('Ready to talk','resting');}
-  catch(error){setPresence(`Needs attention: ${error.message}`,'resting');}
+  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
+  catch(error){activity('app_load_failed',{error_name:error.name||'Error'});setPresence(`Needs attention: ${error.message}`,'resting');}
 }
 
 initialize();
