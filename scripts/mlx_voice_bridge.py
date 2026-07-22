@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -25,11 +26,16 @@ MODEL_ID = os.environ.get(
 STREAMING_INTERVAL = float(os.environ.get('QWEN_TTS_STREAMING_INTERVAL', '0.8'))
 SENTENCE_BATCH_SIZE = max(2, min(4, int(os.environ.get('QWEN_TTS_SENTENCE_BATCH_SIZE', '2'))))
 WATCHDOG_SECONDS = max(30, min(120, int(os.environ.get('QWEN_TTS_WATCHDOG_SECONDS', '110'))))
+MAX_REQUEST_SECONDS = max(
+    WATCHDOG_SECONDS,
+    min(840, int(os.environ.get('QWEN_TTS_MAX_REQUEST_SECONDS', '780'))),
+)
 CACHE_LIMIT = max(8, int(os.environ.get('QWEN_TTS_CACHE_LIMIT', '96')))
 CACHE_MAX_BYTES = max(128 * 1024 * 1024, int(os.environ.get('QWEN_TTS_CACHE_MAX_BYTES', str(2 * 1024 * 1024 * 1024))))
 CACHE_DIR = os.environ.get('QWEN_TTS_CACHE_DIR', '')
 CACHE_SCHEMA_VERSION = 'sentence-foundry-v3-clean-boundaries'
 app = FastAPI(title='Here I Am MLX voice bridge')
+logger = logging.getLogger('here_i_am_voice')
 LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', 'here-i-am-local-v1')
 _model = None
 _model_lock = threading.Lock()
@@ -121,6 +127,14 @@ def sentence_segments(text: str, minimum_words: int = 15, maximum_words: int = 3
 
 def adaptive_token_ceiling(text: str) -> int:
     return max(90, min(480, len(text.split()) * 8))
+
+
+def watchdog_failure(started: float, last_progress: float, now: float) -> str:
+    if now - started > MAX_REQUEST_SECONDS:
+        return 'Voice preparation exceeded the absolute local safety limit'
+    if now - last_progress > WATCHDOG_SECONDS:
+        return 'Voice preparation stopped making audio progress'
+    return ''
 
 
 def trim_segment_artifacts(audio: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -384,6 +398,8 @@ def health():
         'active_request_id': request_id,
         'first_frame_ready': bool(first_frame_at),
         'watchdog_seconds': WATCHDOG_SECONDS,
+        'watchdog_mode': 'no_progress',
+        'max_request_seconds': MAX_REQUEST_SECONDS,
         'sentence_batch_size': SENTENCE_BATCH_SIZE,
         'cache_max_bytes': CACHE_MAX_BYTES,
         'active_cache_key': active_cache_key,
@@ -463,6 +479,11 @@ def synthesize(request: SynthesisRequest):
         missing_indexes = [index for index, value in enumerate(completed_audio) if value is None]
         effective_batch_size = 1 if timeout_marker.exists() else SENTENCE_BATCH_SIZE
         started = time.monotonic()
+        last_progress = started
+        logger.info(
+            'voice synthesis started request_id=%s segments_total=%s segments_resumed=%s batch_size=%s',
+            request_id, len(segments), resumed_segments, effective_batch_size,
+        )
         for missing_start in range(0, len(missing_indexes), effective_batch_size):
             group_indexes = missing_indexes[missing_start:missing_start + effective_batch_size]
             group = [segments[index] for index in group_indexes]
@@ -480,8 +501,10 @@ def synthesize(request: SynthesisRequest):
             ):
                 if cancel_event.is_set():
                     raise HTTPException(status_code=409, detail='Voice preparation was canceled')
-                if time.monotonic() - started > WATCHDOG_SECONDS:
-                    raise HTTPException(status_code=504, detail='Voice preparation exceeded the local safety limit')
+                now = time.monotonic()
+                if failure := watchdog_failure(started, last_progress, now):
+                    raise HTTPException(status_code=504, detail=failure)
+                last_progress = now
                 mark_first_frame(request_id)
                 sample_rate = int(result.sample_rate)
                 group_parts[int(result.sequence_idx)].append(np.asarray(result.audio, dtype=np.float32).reshape(-1))
@@ -494,7 +517,12 @@ def synthesize(request: SynthesisRequest):
                     raise HTTPException(status_code=503, detail=f'The local voice produced only silence for segment {segment_index + 1}')
                 write_cached_segment(segment_directory, segment_index, segment_audio, sample_rate)
                 completed_audio[segment_index] = segment_audio
-                mark_segments_complete(request_id, sum(value is not None for value in completed_audio))
+                completed_count = sum(value is not None for value in completed_audio)
+                mark_segments_complete(request_id, completed_count)
+                logger.info(
+                    'voice segment completed request_id=%s segment=%s segments_complete=%s segments_total=%s elapsed=%.1f',
+                    request_id, segment_index + 1, completed_count, len(segments), time.monotonic() - started,
+                )
         if any(value is None for value in completed_audio):
             raise HTTPException(status_code=503, detail='The local voice did not complete every speech segment')
         audio_parts = [value for value in completed_audio if value is not None]
@@ -505,6 +533,10 @@ def synthesize(request: SynthesisRequest):
         atomic_write_bytes(destination, payload)
         timeout_marker.unlink(missing_ok=True)
         trim_cache(destination.parent)
+        logger.info(
+            'voice synthesis completed request_id=%s segments_total=%s segments_resumed=%s elapsed=%.1f bytes=%s',
+            request_id, len(segments), resumed_segments, time.monotonic() - started, len(payload),
+        )
         return Response(
             payload,
             media_type='audio/wav',
@@ -522,6 +554,10 @@ def synthesize(request: SynthesisRequest):
     except HTTPException as exc:
         if exc.status_code == 504:
             atomic_write_bytes(timeout_marker, b'retry incomplete segments one at a time\n')
+        logger.warning(
+            'voice synthesis stopped request_id=%s status=%s detail=%s',
+            request_id, exc.status_code, exc.detail,
+        )
         raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f'Local voice generation failed: {exc}') from exc

@@ -171,3 +171,12 @@ def test_segment_cache_key_invalidates_when_text_or_reference_changes(tmp_path):
 
     assert changed_text != original
     assert changed_reference != original
+
+
+def test_voice_watchdog_tracks_stalled_progress_not_total_elapsed(monkeypatch):
+    monkeypatch.setattr(bridge, 'WATCHDOG_SECONDS', 10)
+    monkeypatch.setattr(bridge, 'MAX_REQUEST_SECONDS', 100)
+
+    assert bridge.watchdog_failure(started=0, last_progress=27, now=36) == ''
+    assert bridge.watchdog_failure(started=0, last_progress=20, now=31) == 'Voice preparation stopped making audio progress'
+    assert bridge.watchdog_failure(started=0, last_progress=95, now=101) == 'Voice preparation exceeded the absolute local safety limit'
