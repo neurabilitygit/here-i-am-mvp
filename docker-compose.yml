@@ -13,6 +13,7 @@ services:
       APP_BUILD_DATE: ${APP_BUILD_DATE:-}
       SESSIONS_DIR: /data/library/sessions
       CHROMA_DIR: /data/appdata/chroma
+      ANONYMIZED_TELEMETRY: "false"
       LOGS_DIR: /data/appdata/logs
       TMP_DIR: /data/appdata/tmp
       JOBS_DIR: /data/appdata/jobs

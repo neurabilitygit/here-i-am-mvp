@@ -14,6 +14,11 @@ def test_chroma_is_append_only():
     assert '.delete(where' not in sources
 
 
+def test_chroma_telemetry_is_disabled_in_production():
+    compose = (Path(__file__).parents[1] / 'docker-compose.yml').read_text(encoding='utf-8')
+    assert 'ANONYMIZED_TELEMETRY: "false"' in compose
+
+
 def test_native_bridges_are_detached_and_read_the_protected_token():
     root = Path(__file__).parents[1]
     launcher = (root / 'scripts' / 'start.sh').read_text()

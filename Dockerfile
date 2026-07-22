@@ -45,6 +45,7 @@ COPY --chown=hereiam:hereiam app /workspace/app
 COPY --chown=hereiam:hereiam tests /workspace/tests
 COPY --chown=hereiam:hereiam scripts /workspace/scripts
 COPY --chown=hereiam:hereiam requirements-voice-mlx.txt /workspace/requirements-voice-mlx.txt
+COPY --chown=hereiam:hereiam docker-compose.yml /workspace/docker-compose.yml
 COPY --chown=hereiam:hereiam pyproject.toml /workspace/pyproject.toml
 WORKDIR /workspace
 ENV PYTHONPATH=/workspace/app
