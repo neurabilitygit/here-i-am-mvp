@@ -26,6 +26,9 @@ def test_health_and_security_headers():
     assert 'Selected answer engine' in client.get('/').text
     assert client.get('/docs').status_code == 404
     assert response.headers['x-request-id']
+    version = client.get('/api/version')
+    assert version.status_code == 200
+    assert set(version.json()) == {'commit', 'build_date'}
 
 
 def test_cross_origin_mutation_is_rejected():

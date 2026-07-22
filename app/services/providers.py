@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ import requests
 from config import settings
 from services.ollama_client import ollama_client
 from services.preferences import cloud_api_key, load_preferences
+from services.jsonl_store import append_jsonl
 
 
 _audit_lock = threading.Lock()
@@ -33,11 +33,7 @@ def _append_audit(record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     value = {'timestamp': datetime.now(timezone.utc).isoformat(), **record}
     with _audit_lock:
-        descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
-        with os.fdopen(descriptor, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps(value, ensure_ascii=False) + '\n')
-            handle.flush()
-            os.fsync(handle.fileno())
+        append_jsonl(path, value)
 
 
 class LocalProvider:

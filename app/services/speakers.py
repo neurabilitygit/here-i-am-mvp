@@ -150,7 +150,15 @@ def safe_speaker_id(speaker_id: str) -> str:
 
 def _known_speaker_references() -> list[tuple[str, str]]:
     references: list[tuple[str, str]] = []
-    for profile in list_speakers():
+    profiles = sorted(
+        list_speakers(),
+        key=lambda profile: (
+            profile.default_role == 'memory_subject',
+            profile.updated_at,
+        ),
+        reverse=True,
+    )
+    for profile in profiles:
         if len(references) == 4:
             break
         record = get_speaker_record(profile.speaker_id)
@@ -204,9 +212,20 @@ def _normalize_segments(payload: dict[str, Any]) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             continue
         segment = {'cluster_id': label, 'start': round(start, 3), 'end': round(end, 3), 'text': text}
+        try:
+            speaker_confidence = float(item.get('speaker_confidence'))
+        except (TypeError, ValueError):
+            speaker_confidence = None
+        if speaker_confidence is not None:
+            segment['speaker_confidence'] = max(0.0, min(1.0, speaker_confidence))
         if normalized and normalized[-1]['cluster_id'] == label and start - normalized[-1]['end'] <= 1.2:
             normalized[-1]['end'] = segment['end']
             normalized[-1]['text'] = f"{normalized[-1]['text']} {text}"
+            if 'speaker_confidence' in normalized[-1] or 'speaker_confidence' in segment:
+                normalized[-1]['speaker_confidence'] = min(
+                    float(normalized[-1].get('speaker_confidence', 0.0)),
+                    float(segment.get('speaker_confidence', 0.0)),
+                )
         else:
             normalized.append(segment)
     if not normalized:
@@ -226,6 +245,12 @@ def _auto_assign_known_speakers(session_path: Path, turns: list[dict[str, Any]])
         return False
     subject_count = sum(profiles[cluster_id].default_role == 'memory_subject' for cluster_id in cluster_ids)
     if subject_count != 1:
+        return False
+    # A matching label is a useful suggestion, but it is not sufficient proof
+    # of identity. Only a provider-supplied speaker-match confidence may bypass
+    # the human review gate; ordinary transcription confidence is deliberately
+    # ignored because it measures word accuracy, not voice identity.
+    if any(float(turn.get('speaker_confidence', 0.0)) < 0.95 for turn in turns):
         return False
     assignments = [
         {

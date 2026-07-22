@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import fcntl
+import json
+import logging
 import re
 import threading
 import traceback
@@ -14,6 +15,9 @@ from typing import Callable
 from config import settings
 from models.schemas import JobProgress
 from services.storage import atomic_write_text
+
+
+logger = logging.getLogger(__name__)
 
 
 class JobConflictError(RuntimeError):
@@ -116,13 +120,23 @@ class JobManager:
             try:
                 target()
             except Exception as exc:
-                traceback.print_exc()
+                frames = traceback.extract_tb(exc.__traceback__)
+                final_frame = frames[-1] if frames else None
+                logger.error(
+                    'background job failed job_id=%s exception_type=%s file=%s line=%s function=%s',
+                    job_id,
+                    type(exc).__name__,
+                    Path(final_frame.filename).name if final_frame else '',
+                    final_frame.lineno if final_frame else 0,
+                    final_frame.name if final_frame else '',
+                )
                 self.update(
                     job_id,
                     status='error',
-                    message=f'Background job failed: {exc}',
+                    message='Background job stopped before it could finish. Nothing was deleted; review local logs and retry.',
                     completed=True,
-                    result={'error': str(exc)},
+                    error='background_job_failed',
+                    result={'error_code': 'background_job_failed', 'exception_type': type(exc).__name__},
                 )
 
         self._executor.submit(wrapped)

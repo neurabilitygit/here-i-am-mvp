@@ -1,5 +1,6 @@
 from models.schemas import VoiceStatus
 from services import voice
+from services.storage import create_session_dir, session_paths, update_processing_state
 
 
 class DummyResponse:
@@ -13,6 +14,18 @@ class DummyResponse:
 
     def json(self):
         return {'status': 'canceling'}
+
+
+def test_global_voice_candidates_exclude_mixed_conversation_audio(monkeypatch):
+    _session_id, session = create_session_dir('mixed voices')
+    paths = session_paths(session)
+    paths['audio'].write_bytes(b'not-real-audio')
+    paths['transcript'].write_text('word ' * 100, encoding='utf-8')
+    update_processing_state(session, recording_mode='conversation', speaker_review_status='complete')
+    monkeypatch.setattr(voice, 'list_session_dirs', lambda: [session])
+    monkeypatch.setattr(voice, '_duration', lambda _path: 60.0)
+
+    assert voice.list_voice_candidates() == []
 
 
 def test_cancel_stream_targets_the_matching_bridge_job(monkeypatch):

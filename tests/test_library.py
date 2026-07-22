@@ -29,6 +29,9 @@ def test_structured_backup_copies_without_changing_source():
     paths = session_paths(session)
     atomic_write_text(paths['transcript'], 'synthetic')
     paths['audio'].write_bytes(b'synthetic-original-audio')
+    archived = Path(settings.archive_dir) / 'archived-memory' / 'recording.source'
+    archived.parent.mkdir(parents=True, exist_ok=True)
+    archived.write_bytes(b'archived-original-audio')
     source = paths['transcript'].read_bytes()
     result = create_structured_backup()
     assert result['files'] >= 1
@@ -37,6 +40,7 @@ def test_structured_backup_copies_without_changing_source():
     manifest = json.loads((backup / 'manifest.json').read_text(encoding='utf-8'))
     backed_up = {item['path'] for item in manifest['files']}
     assert str(paths['audio'].relative_to(Path(settings.data_root))) in backed_up
+    assert str(archived.relative_to(Path(settings.data_root))) in backed_up
     assert 'appdata/chroma-export.jsonl' in backed_up
     assert manifest['backup_kind'] == 'full-rebuildable'
 
@@ -64,3 +68,4 @@ def test_structured_backup_copies_without_changing_source():
     )
     assert restored.returncode == 0, restored.stderr
     assert (empty_restore / paths['audio'].relative_to(Path(settings.data_root))).read_bytes() == b'synthetic-original-audio'
+    assert (empty_restore / archived.relative_to(Path(settings.data_root))).read_bytes() == b'archived-original-audio'

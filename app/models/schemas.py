@@ -283,7 +283,7 @@ class VoiceStatus(BaseModel):
     reference_ready: bool = False
     reference_session_id: str | None = None
     reference_seconds: float = 0
-    disclosure_version: str = '1.0'
+    disclosure_version: str = '2.0'
     bridge_ready: bool = False
     bridge_busy: bool = False
     bridge_busy_seconds: float = 0

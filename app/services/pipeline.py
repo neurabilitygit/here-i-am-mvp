@@ -843,6 +843,45 @@ def build_conversation_chunk_records(
     return records
 
 
+def build_reindex_records(session: Path) -> list[dict]:
+    """Rebuild one session using the same evidence boundary as active indexing."""
+    paths = session_paths(session)
+    state = load_json(paths['state']) if paths['state'].exists() else {}
+    metadata = load_json(paths['metadata']) if paths['metadata'].exists() else {
+        'title': session.name,
+        'summary': '',
+        'topics': [],
+    }
+    recording_mode = state.get('recording_mode', 'solo')
+    if recording_mode == 'conversation':
+        if state.get('speaker_review_status') != 'complete' or not paths['memory_units'].exists():
+            raise RuntimeError(
+                f'Conversation {session.name} must have confirmed speaker roles before reindexing'
+            )
+        memory_units = [
+            json.loads(line)
+            for line in paths['memory_units'].read_text(encoding='utf-8').splitlines()
+            if line.strip()
+        ]
+        canonical_content = json.dumps(memory_units, ensure_ascii=False, sort_keys=True)
+        content_version = content_version_for(canonical_content)
+        metadata['content_version'] = content_version
+        metadata['recording_mode'] = 'conversation'
+        metadata['subject_speaker_id'] = state.get('subject_speaker_id', '')
+        return build_conversation_chunk_records(
+            session.name,
+            memory_units,
+            metadata,
+            content_version=content_version,
+        )
+
+    transcript = transcript_plain_text(paths['transcript'])
+    content_version = content_version_for(transcript)
+    metadata['content_version'] = content_version
+    metadata['recording_mode'] = 'solo'
+    return build_chunk_records(session.name, transcript, metadata, content_version=content_version)
+
+
 def reindex_to_migration_collection(job_id: str) -> None:
     """Build the v2 index alongside the active collection without changing active data."""
     sessions = [p for p in list_session_dirs() if session_paths(p)['transcript'].exists()]
@@ -851,15 +890,7 @@ def reindex_to_migration_collection(job_id: str) -> None:
     embedded = 0
     for processed, session in enumerate(sessions):
         paths = session_paths(session)
-        transcript = transcript_plain_text(paths['transcript'])
-        metadata = load_json(paths['metadata']) if paths['metadata'].exists() else {
-            'title': session.name,
-            'summary': '',
-            'topics': [],
-        }
-        content_version = content_version_for(transcript)
-        metadata['content_version'] = content_version
-        records = build_chunk_records(session.name, transcript, metadata, content_version=content_version)
+        records = build_reindex_records(session)
         if records:
             ids = [record['id'] for record in records]
             existing = set(target.get(ids=ids).get('ids', []))
@@ -983,24 +1014,32 @@ def query_context_with_distances(question: str, n_results: int | None = None) ->
     seed_count = n_results or settings.retrieval_seed_chunks
     candidate_count = seed_count if n_results is not None else max(seed_count, settings.retrieval_candidate_chunks)
     where = active_chroma_filter(active_versions)
-    query_arguments = {
-        'query_texts': [question],
-        'n_results': candidate_count if where is not None else collection.count(),
-        'include': ['documents', 'metadatas', 'distances'],
-    }
-    if where is not None:
-        query_arguments['where'] = where
-    results = collection.query(
-        **query_arguments,
+    collection_count = collection.count()
+    query_size = candidate_count if where is not None else min(
+        collection_count,
+        max(32, candidate_count * 4),
     )
-    docs = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get('distances', [[]])[0]
-    active_results = [
-        (doc, meta, distance)
-        for doc, meta, distance in zip(docs, metadatas, distances)
-        if record_is_active(meta, active_versions)
-    ][:candidate_count]
+    active_results: list[tuple[str, dict, float]] = []
+    while query_size:
+        query_arguments = {
+            'query_texts': [question],
+            'n_results': query_size,
+            'include': ['documents', 'metadatas', 'distances'],
+        }
+        if where is not None:
+            query_arguments['where'] = where
+        results = collection.query(**query_arguments)
+        docs = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get('distances', [[]])[0]
+        active_results = [
+            (doc, meta, distance)
+            for doc, meta, distance in zip(docs, metadatas, distances)
+            if record_is_active(meta, active_versions)
+        ][:candidate_count]
+        if where is not None or len(active_results) >= candidate_count or query_size >= collection_count:
+            break
+        query_size = min(collection_count, query_size * 2)
     docs = [item[0] for item in active_results]
     metadatas = [item[1] for item in active_results]
     distances = [item[2] for item in active_results]

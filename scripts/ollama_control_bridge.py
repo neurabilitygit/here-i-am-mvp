@@ -14,12 +14,15 @@ from fastapi.responses import JSONResponse
 PID_FILE = Path(os.environ.get('OLLAMA_PID_FILE', '/Volumes/Personal/here-i-am/run/ollama.pid'))
 OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://127.0.0.1:11434')
 app = FastAPI(title='Ollama Control Bridge')
-LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', 'here-i-am-local-v1')
+LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', '')
 
 
 @app.middleware('http')
 async def protect_mutations(request: Request, call_next):
-    if request.method != 'GET' and request.headers.get('X-Here-I-Am-Local') != LOCAL_BRIDGE_TOKEN:
+    if request.method != 'GET' and (
+        not LOCAL_BRIDGE_TOKEN
+        or request.headers.get('X-Here-I-Am-Local') != LOCAL_BRIDGE_TOKEN
+    ):
         return JSONResponse(status_code=403, content={'detail': 'Local bridge authorization is required'})
     return await call_next(request)
 
@@ -48,6 +51,18 @@ def read_pid() -> int | None:
 def write_pid(pid: int) -> None:
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(pid))
+
+
+def is_launcher_ollama(pid: int) -> bool:
+    completed = subprocess.run(
+        ['ps', '-p', str(pid), '-o', 'command='],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=3,
+    )
+    command = completed.stdout.strip()
+    return completed.returncode == 0 and 'ollama serve' in command
 
 
 @app.post('/auth/check')
@@ -89,7 +104,7 @@ def start():
 @app.post('/ollama/stop', include_in_schema=False)
 def stop():
     pid = read_pid()
-    if pid:
+    if pid and is_launcher_ollama(pid):
         try:
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -99,7 +114,12 @@ def stop():
                 os.kill(pid, signal.SIGTERM)
             except Exception:
                 pass
+    elif pid:
+        return JSONResponse(
+            status_code=409,
+            content={'status': 'refused', 'detail': 'The saved PID does not belong to launcher-owned Ollama'},
+        )
     else:
-        subprocess.run(['pkill', '-f', 'ollama serve'], check=False)
+        return {'status': 'stopped', 'detail': 'No launcher-owned Ollama process is recorded'}
     time.sleep(1)
     return {'status': 'stopped', 'detail': 'Stop signal sent to Ollama'}

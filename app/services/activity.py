@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import threading
 from datetime import datetime, timezone
@@ -9,6 +8,7 @@ from typing import Any
 
 from config import settings
 from models.schemas import ClientActivityEvent
+from services.jsonl_store import append_jsonl, recent_jsonl
 
 
 _WRITE_LOCK = threading.Lock()
@@ -42,8 +42,7 @@ def record_activity(payload: ClientActivityEvent, *, request_id: str = '') -> di
         'details': _safe_details(payload.details),
     }
     with _WRITE_LOCK:
-        with path.open('a', encoding='utf-8') as handle:
-            handle.write(json.dumps(event, separators=(',', ':'), ensure_ascii=True) + '\n')
+        append_jsonl(path, event)
     return event
 
 
@@ -52,11 +51,4 @@ def recent_activity(limit: int = 100) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     with _WRITE_LOCK:
-        lines = path.read_text(encoding='utf-8').splitlines()[-limit:]
-    events: list[dict[str, Any]] = []
-    for line in lines:
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return events
+        return recent_jsonl(path, limit)

@@ -128,7 +128,7 @@
             <label><input id="import-mode-solo" type="radio" name="import-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong></span></label>
             <label><input id="import-mode-conversation" type="radio" name="import-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>Conversation</strong></span></label>
           </fieldset>
-          <p id="memory-upload-status" class="memory-upload-status" role="status" aria-live="polite">Audio stays on this Mac.</p>
+          <p id="memory-upload-status" class="memory-upload-status" role="status" aria-live="polite">The original stays on this Mac. A conversation analysis copy uses OpenAI only when you start the memory batch.</p>
         </section>
         <section id="speaker-review-queue" class="speaker-review-queue" hidden aria-labelledby="speaker-review-title">
           <div class="voice-rings" aria-hidden="true"><i></i><i></i></div>
@@ -194,6 +194,7 @@
           <button id="reconcile-run" class="wide-button" type="button">Check my memories</button>
           <button id="backup-create" class="wide-button" type="button">Make a full safety copy</button>
           <details><summary>Technical activity</summary><div id="technical-status"></div><button id="warm-model" type="button" class="text-button">Warm local AI</button></details>
+          <p id="build-version" class="setting-note">Build information is loading.</p>
         </section>
       </div>
       <footer><button id="settings-save" class="primary-wide" type="button">Save settings</button><p id="settings-status" role="status"></p></footer>
@@ -241,7 +242,7 @@
       <p>Choose one clear recording. A short copy is prepared; your original is never changed.</p>
       <label>Recording<select id="voice-candidate"></select></label>
       <label>Voice engine<select id="voice-provider"><option value="local">On this Mac — private</option><option value="elevenlabs">ElevenLabs cloud</option></select></label>
-      <label class="consent-card"><input id="voice-consent" type="checkbox"/><span><strong>I have the right to use this voice.</strong><small>I understand that AI can make this voice say new words, and generated speech will be labeled.</small></span></label>
+      <label class="consent-card"><input id="voice-consent" type="checkbox"/><span><strong>I have the right to use this voice.</strong><small>I understand that AI can make this voice say new words, and generated speech will be labeled. If I choose ElevenLabs, the short derived reference and answer text are sent to that provider.</small></span></label>
       <button id="voice-create" class="primary-wide" type="button">Create my AI voice</button>
       <p id="voice-dialog-status" role="status"></p>
     </form>

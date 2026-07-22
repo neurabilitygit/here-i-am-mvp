@@ -28,7 +28,7 @@ SENTENCE_BATCH_SIZE = max(2, min(4, int(os.environ.get('QWEN_TTS_SENTENCE_BATCH_
 WATCHDOG_SECONDS = max(30, min(120, int(os.environ.get('QWEN_TTS_WATCHDOG_SECONDS', '110'))))
 MAX_REQUEST_SECONDS = max(
     WATCHDOG_SECONDS,
-    min(840, int(os.environ.get('QWEN_TTS_MAX_REQUEST_SECONDS', '780'))),
+    min(120, int(os.environ.get('QWEN_TTS_MAX_REQUEST_SECONDS', '120'))),
 )
 CACHE_LIMIT = max(8, int(os.environ.get('QWEN_TTS_CACHE_LIMIT', '96')))
 CACHE_MAX_BYTES = max(128 * 1024 * 1024, int(os.environ.get('QWEN_TTS_CACHE_MAX_BYTES', str(2 * 1024 * 1024 * 1024))))
@@ -36,7 +36,10 @@ CACHE_DIR = os.environ.get('QWEN_TTS_CACHE_DIR', '')
 CACHE_SCHEMA_VERSION = 'sentence-foundry-v3-clean-boundaries'
 app = FastAPI(title='Here I Am MLX voice bridge')
 logger = logging.getLogger('here_i_am_voice')
-LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', 'here-i-am-local-v1')
+LOCAL_BRIDGE_TOKEN = os.environ.get('LOCAL_BRIDGE_TOKEN', '')
+ALLOWED_REFERENCE_ROOT = Path(
+    os.environ.get('HERE_I_AM_VOICE_DATA_ROOT', os.environ.get('DATA_ROOT', '/Volumes/Personal/here-i-am'))
+).resolve()
 _model = None
 _model_lock = threading.Lock()
 _generation_lock = threading.Lock()
@@ -54,7 +57,10 @@ _reference_cache_audio = None
 
 @app.middleware('http')
 async def protect_mutations(request: Request, call_next):
-    if request.method != 'GET' and request.headers.get('X-Here-I-Am-Local') != LOCAL_BRIDGE_TOKEN:
+    if request.method != 'GET' and (
+        not LOCAL_BRIDGE_TOKEN
+        or request.headers.get('X-Here-I-Am-Local') != LOCAL_BRIDGE_TOKEN
+    ):
         from fastapi.responses import JSONResponse
 
         return JSONResponse(status_code=403, content={'detail': 'Local bridge authorization is required'})
@@ -442,7 +448,10 @@ def clear_cache():
 
 
 def validate_reference(request: SynthesisRequest) -> None:
-    if not Path(request.reference_audio).exists():
+    reference = Path(request.reference_audio).resolve()
+    if not reference.is_relative_to(ALLOWED_REFERENCE_ROOT):
+        raise HTTPException(status_code=403, detail='Reference audio must be inside the Here I Am data directory')
+    if not reference.is_file():
         raise HTTPException(status_code=404, detail='Reference audio was not found on the host')
 
 
@@ -451,7 +460,6 @@ def synthesize(request: SynthesisRequest):
     validate_reference(request)
     key = cache_key(request)
     destination = cache_path(request, key)
-    trim_cache(destination.parent)
     if destination.exists() and destination.stat().st_size > 44:
         destination.touch()
         return Response(
@@ -463,6 +471,7 @@ def synthesize(request: SynthesisRequest):
     if generation is None:
         raise HTTPException(status_code=409, detail='The local voice is already preparing another answer')
     request_id, cancel_event = generation
+    trim_cache(destination.parent)
     segment_directory = segment_cache_dir(request, key)
     timeout_marker = segment_directory / '.retry-single'
     try:

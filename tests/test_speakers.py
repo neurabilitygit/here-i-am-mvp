@@ -1,7 +1,8 @@
 import json
 
 from models.schemas import SpeakerCreate
-from services.speakers import _normalize_segments, apply_speaker_assignments, create_speaker, speaker_review
+from services import speakers
+from services.speakers import _auto_assign_known_speakers, _normalize_segments, apply_speaker_assignments, create_speaker, speaker_review
 from services.storage import create_session_dir, load_json, save_json, session_paths, update_processing_state
 
 
@@ -74,3 +75,22 @@ def test_diarization_segments_merge_adjacent_turns_without_losing_speaker_labels
     assert turns[0]['cluster_id'] == 'speaker_0'
     assert turns[0]['text'] == 'First question. More detail.'
     assert turns[1]['cluster_id'] == 'speaker_1'
+
+
+def test_known_speaker_labels_still_require_identity_confidence(monkeypatch):
+    subject = create_speaker(SpeakerCreate(display_name='Known Subject', default_role='memory_subject'))
+    interviewer = create_speaker(SpeakerCreate(display_name='Known Interviewer', default_role='interviewer'))
+    _session_id, session = create_session_dir('Known voices')
+    applied = []
+    monkeypatch.setattr(speakers, 'apply_speaker_assignments', lambda *_args: applied.append(True))
+    turns = [
+        {'cluster_id': subject.speaker_id, 'start': 0.0, 'end': 2.0, 'text': 'A memory.'},
+        {'cluster_id': interviewer.speaker_id, 'start': 2.0, 'end': 3.0, 'text': 'A question.'},
+    ]
+
+    assert _auto_assign_known_speakers(session, turns) is False
+    assert applied == []
+
+    confident = [{**turn, 'speaker_confidence': 0.97} for turn in turns]
+    assert _auto_assign_known_speakers(session, confident) is True
+    assert applied == [True]

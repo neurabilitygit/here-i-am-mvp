@@ -1,14 +1,19 @@
+import json
+
 from services.pipeline import (
     build_chunk_records,
     build_conversation_chunk_records,
+    build_reindex_records,
     active_chroma_filter,
     content_version_for,
     metadata_prompt,
     normalize_chroma_value,
+    query_context_with_distances,
     record_is_active,
     semantic_chunks,
     subject_evidence_only,
 )
+from services.storage import create_session_dir, save_json, session_paths, update_processing_state
 
 
 def test_semantic_chunks_do_not_cut_words_and_overlap():
@@ -68,6 +73,41 @@ def test_active_chroma_filter_uses_versioned_manifest_and_preserves_legacy_fallb
     }
 
 
+def test_legacy_retrieval_expands_candidates_without_always_querying_every_vector(monkeypatch):
+    class Collection:
+        query_sizes = []
+
+        @staticmethod
+        def count():
+            return 100
+
+        def query(self, **kwargs):
+            size = kwargs['n_results']
+            self.query_sizes.append(size)
+            stale_count = max(0, size - 4 if size >= 64 else size)
+            documents = [f'stale {index}' for index in range(stale_count)]
+            metadata = [{'session_id': 'archived'} for _ in range(stale_count)]
+            distances = [1.0] * stale_count
+            if size >= 64:
+                documents.extend(['active memory'] * 4)
+                metadata.extend([
+                    {'session_id': 'active', 'chunk_index': index, 'title': 'Memory'}
+                    for index in range(4)
+                ])
+                distances.extend([0.5] * 4)
+            return {'documents': [documents], 'metadatas': [metadata], 'distances': [distances]}
+
+    collection = Collection()
+    monkeypatch.setattr('services.pipeline.chroma_collection', lambda: collection)
+    monkeypatch.setattr('services.pipeline.active_index_versions', lambda: {'active': 'legacy'})
+
+    docs, _metadata, _distances = query_context_with_distances('active memory', n_results=4)
+
+    assert docs
+    assert collection.query_sizes == [32, 64]
+    assert 100 not in collection.query_sizes
+
+
 def test_conversation_chunks_mark_subject_evidence_and_keep_questions_context_only():
     records = build_conversation_chunk_records(
         'conversation-1',
@@ -88,3 +128,34 @@ def test_conversation_chunks_mark_subject_evidence_and_keep_questions_context_on
     assert 'retrieval only, not autobiographical evidence' in records[0]['text']
     assert 'Memory subject evidence: I built a tree house' in records[0]['text']
     assert subject_evidence_only(records[0]['text']) == 'I built a tree house with my father.'
+
+
+def test_conversation_reindex_uses_confirmed_subject_units_not_full_transcript():
+    _session_id, session = create_session_dir('Conversation migration')
+    paths = session_paths(session)
+    paths['transcript'].write_text(
+        '**Interviewer:** Where did you grow up?\n\n**Eric:** I grew up in New York.\n',
+        encoding='utf-8',
+    )
+    paths['memory_units'].write_text(json.dumps({
+        'memory_unit_id': 'unit-0001',
+        'subject_speaker_id': 'eric',
+        'subject_evidence': 'I grew up in New York.',
+        'retrieval_context': 'Where did you grow up?',
+        'start': 1.0,
+        'end': 3.0,
+    }) + '\n', encoding='utf-8')
+    save_json(paths['metadata'], {'title': 'Growing up', 'summary': 'A memory', 'topics': ['childhood']})
+    update_processing_state(
+        session,
+        recording_mode='conversation',
+        speaker_review_status='complete',
+        subject_speaker_id='eric',
+    )
+
+    records = build_reindex_records(session)
+
+    assert records
+    assert all(record['metadata']['evidence_role'] == 'memory_subject' for record in records)
+    assert all('**Interviewer:**' not in record['text'] for record in records)
+    assert 'I grew up in New York.' in records[0]['text']

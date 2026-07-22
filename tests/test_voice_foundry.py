@@ -61,6 +61,7 @@ def test_stitching_adds_faded_pause_and_applies_speed():
 
 
 def test_synthesis_batches_and_reuses_cached_wav(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge, 'ALLOWED_REFERENCE_ROOT', tmp_path.resolve())
     reference = tmp_path / 'reference.wav'
     sf.write(reference, np.zeros(24000, dtype=np.float32), 24000)
     monkeypatch.setenv('QWEN_TTS_CACHE_DIR', str(tmp_path / 'cache'))
@@ -98,6 +99,7 @@ def test_synthesis_batches_and_reuses_cached_wav(monkeypatch, tmp_path):
 
 
 def test_timed_out_synthesis_resumes_cached_segments_and_stitches_one_wav(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge, 'ALLOWED_REFERENCE_ROOT', tmp_path.resolve())
     reference = tmp_path / 'reference.wav'
     sf.write(reference, np.zeros(24000, dtype=np.float32), 24000)
     monkeypatch.setenv('QWEN_TTS_CACHE_DIR', str(tmp_path / 'cache'))

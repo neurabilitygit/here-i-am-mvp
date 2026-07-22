@@ -426,6 +426,7 @@ async function askQuestion(question) {
   if (!value) return;
   const startedAt = performance.now();
   cancelVoicePrerender();
+  if (state.voicePreparing || state.voicePlaying) stopSpeaking();
   beginFetchTask();
   state.chatAbort?.abort();
   const generation = ++state.chatGeneration;
@@ -588,6 +589,14 @@ async function loadVoiceStatus() {
   } catch (error) { byId('voice-setting-status').textContent = error.message; }
 }
 
+async function loadBuildVersion() {
+  try {
+    const version = await api('/api/version');
+    const commit = version.commit && version.commit !== 'unknown' ? version.commit.slice(0, 8) : 'development';
+    byId('build-version').textContent = `Build ${commit}${version.build_date ? ` · ${new Date(version.build_date).toLocaleDateString()}` : ''}`;
+  } catch (_) { byId('build-version').textContent = 'Build information is unavailable.'; }
+}
+
 function animateAudio() {
   window.cancelAnimationFrame(state.audioAnimation);
   const data = new Uint8Array(state.audioAnalyser.frequencyBinCount);
@@ -650,6 +659,7 @@ function cancelVoicePrerender() {
   state.voicePrerenderRequestId = null;
   state.voicePrerenderText = '';
   state.voicePrerenderBlob = null;
+  state.voicePrerenderGeneration = 0;
   if (state.voicePrerenderFetchHeld) { state.voicePrerenderFetchHeld = false; endFetchTask(); }
   updateSpeakButton();
 }
@@ -664,10 +674,11 @@ function cancelVoiceOnPageExit() {
 async function startVoicePrerender() {
   cancelVoicePrerender();
   const text = state.lastAnswer;
+  const generation = state.chatGeneration;
   const requestId = globalThis.crypto?.randomUUID?.() || `voice-preview-${Date.now()}`;
   const startedAt = performance.now();
   const controller = new AbortController();
-  state.voicePrerenderText = text; state.voicePrerenderRequestId = requestId; state.voicePrerenderAbort = controller;
+  state.voicePrerenderText = text; state.voicePrerenderRequestId = requestId; state.voicePrerenderAbort = controller; state.voicePrerenderGeneration = generation;
   state.voicePrerenderFetchHeld = true;
   updateSpeakButton();
   setPresence('Preparing your voice while you read', 'thinking');
@@ -677,7 +688,7 @@ async function startVoicePrerender() {
     const response = await fetch('/api/voice/speak', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,speed:1,request_id:requestId}),signal:controller.signal});
     if (!response.ok) throw new Error('Background voice preparation did not complete');
     const blob = await response.blob();
-    if (state.voicePrerenderText === text && blob.size) {
+    if (state.voicePrerenderText === text && state.voicePrerenderGeneration === generation && state.chatGeneration === generation && state.lastAnswer === text && blob.size) {
       state.voicePrerenderBlob = blob;
       setPresence('Voice is ready to play', 'resting');
       activity('voice_prepare_completed', {request_id: requestId, bytes: blob.size, duration_ms: Math.round(performance.now() - startedAt), automatic: true});
@@ -746,6 +757,8 @@ function finishVoicePlayback() {
 
 async function speakAnswer() {
   if (!state.lastAnswer || !state.voice?.enabled) return;
+  const answerText = state.lastAnswer;
+  const answerGeneration = state.chatGeneration;
   if (
     state.voicePrerenderRequestId
     && state.voicePrerenderText === state.lastAnswer
@@ -758,13 +771,15 @@ async function speakAnswer() {
   stopSpeaking();
   const context = ensureBatchAudio();
   await context.resume();
-  if (state.voicePrerenderText === state.lastAnswer && state.voicePrerenderBlob?.size) {
+  if (state.voicePrerenderText === answerText && state.voicePrerenderGeneration === answerGeneration && state.voicePrerenderBlob?.size) {
     await playVoiceBlob(state.voicePrerenderBlob);
     return;
   }
   const requestId = globalThis.crypto?.randomUUID?.() || `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const startedAt = performance.now();
   state.voiceRequestId = requestId;
+  state.voiceAnswerText = answerText;
+  state.voiceGeneration = answerGeneration;
   state.voiceAbort = new AbortController();
   state.voicePreparing = true;
   state.voiceTimedOut = false;
@@ -776,15 +791,19 @@ async function speakAnswer() {
   byId('stop-speaking').setAttribute('aria-label', 'Cancel voice preparation');
   byId('stop-speaking').querySelector('span:last-child').textContent = 'Cancel';
   setPresence('Preparing voice — you can keep reading or ask another question', 'thinking');
-  activity('voice_prepare_started', {request_id: requestId, answer_chars: state.lastAnswer.length, automatic: false});
+  activity('voice_prepare_started', {request_id: requestId, answer_chars: answerText.length, automatic: false, generation: answerGeneration});
   state.voiceTimeout = window.setTimeout(() => {
     if (state.voicePreparing) setPresence('Your voice is still preparing — the written answer remains available', 'thinking');
   }, 20000);
   try {
-    const response = await fetch('/api/voice/speak', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:state.lastAnswer, speed:1, request_id:requestId}), signal:state.voiceAbort.signal});
+    const response = await fetch('/api/voice/speak', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:answerText, speed:1, request_id:requestId}), signal:state.voiceAbort.signal});
     if (response.status === 409) throw new Error('A voice file is already being prepared. Please wait for it to finish.');
     if (!response.ok) throw new Error((await response.json()).detail || 'Voice generation failed');
-    activity('voice_prepare_completed', {request_id: requestId, bytes: Number(response.headers.get('content-length')) || 0, duration_ms: Math.round(performance.now() - startedAt), automatic: false});
+    if (state.voiceRequestId !== requestId || state.chatGeneration !== answerGeneration || state.lastAnswer !== answerText) {
+      activity('voice_prepare_discarded', {request_id: requestId, reason: 'answer_changed', generation: answerGeneration});
+      return;
+    }
+    activity('voice_prepare_completed', {request_id: requestId, bytes: Number(response.headers.get('content-length')) || 0, duration_ms: Math.round(performance.now() - startedAt), automatic: false, generation: answerGeneration});
     await playVoiceFile(response);
   } catch (error) {
     activity('voice_prepare_failed', {request_id: requestId, error_name: error.name || 'Error', duration_ms: Math.round(performance.now() - startedAt), automatic: false});
@@ -801,8 +820,12 @@ async function speakAnswer() {
     window.clearTimeout(state.voiceTimeout);
     state.voiceTimeout = null;
     state.voicePreparing = false;
-    state.voiceAbort = null;
-    state.voiceRequestId = null;
+    if (state.voiceRequestId === requestId) {
+      state.voiceAbort = null;
+      state.voiceRequestId = null;
+      state.voiceAnswerText = '';
+      state.voiceGeneration = 0;
+    }
     updateSpeakButton();
   }
 }
@@ -1252,7 +1275,23 @@ function setupSpeechQuestion(){
 }
 
 async function runReconciliation(){byId('technical-status').textContent='Checking without changing anything…';try{const report=await api('/api/reconciliation');byId('technical-status').textContent=report.issue_count?`${report.issue_count} items need attention. No automatic repairs were made.`:`All ${report.checked_sessions} memories are internally consistent.`;}catch(error){byId('technical-status').textContent=error.message;}}
-async function createBackup(){byId('technical-status').textContent='Making a full safety copy…';try{const result=await api('/api/backups/structured',{method:'POST'});byId('technical-status').textContent=`Full safety copy ${result.backup_id} contains ${result.files} files.${result.warning?` ${result.warning}`:''}`;}catch(error){byId('technical-status').textContent=error.message;}}
+async function createBackup(){
+  const status=byId('technical-status'); const button=byId('backup-create');
+  status.textContent='Starting a full safety copy…'; button.disabled=true;
+  try{
+    const job=await api('/api/backups/structured',{method:'POST'});
+    let current=job;
+    while(!current.completed){
+      await new Promise((resolve)=>setTimeout(resolve,1500));
+      current=await api(`/api/jobs/${job.id}`);
+      const percent=current.total?Math.round(current.processed/current.total*100):0;
+      status.textContent=`Making a full safety copy — ${current.message}${current.total?` (${percent}%)`:''}`;
+    }
+    if(current.status==='error')throw new Error(current.message);
+    const result=current.result;
+    status.textContent=`Full safety copy ${result.backup_id} contains ${result.files} files.${result.warning?` ${result.warning}`:''}`;
+  }catch(error){status.textContent=error.message;}finally{button.disabled=false;}
+}
 
 function bindEvents(){
   window.addEventListener('pagehide',()=>{activity('page_hidden',{has_answer:Boolean(state.lastAnswer),voice_preparing:Boolean(state.voicePreparing||state.voicePrerenderRequestId)});cancelVoiceOnPageExit();});
@@ -1278,7 +1317,7 @@ function bindEvents(){
 
 async function initialize(){
   bindEvents();drawIdleWave();setupSpeechQuestion();
-  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
+  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers(),loadBuildVersion()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
   catch(error){activity('app_load_failed',{error_name:error.name||'Error'});setPresence(`Needs attention: ${error.message}`,'resting');}
 }
 

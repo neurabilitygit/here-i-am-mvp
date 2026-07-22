@@ -20,7 +20,7 @@ wait_for_url() {
 
 [[ -d "$SOURCE_DIR" ]] || { echo "Missing source: $SOURCE_DIR" >&2; exit 1; }
 [[ -d "$DATA_DIR" ]] || { echo "Missing data volume: $DATA_DIR" >&2; exit 1; }
-for command in docker ollama rsync curl python3; do command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }; done
+for command in docker ollama rsync curl python3 git; do command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }; done
 mkdir -p "$RUN_DIR" "$SECRET_DIR"
 umask 077
 BRIDGE_TOKEN_FILE="$SECRET_DIR/local_bridge_token"
@@ -29,6 +29,13 @@ if [[ ! -s "$BRIDGE_TOKEN_FILE" ]]; then
 fi
 LOCAL_BRIDGE_TOKEN="$(tr -d '\r\n' <"$BRIDGE_TOKEN_FILE")"
 export LOCAL_BRIDGE_TOKEN
+HERE_I_AM_DATA_DIR="$DATA_DIR"
+VOICE_HOST_DATA_ROOT="$DATA_DIR"
+HERE_I_AM_VOICE_DATA_ROOT="$DATA_DIR"
+export HERE_I_AM_DATA_DIR VOICE_HOST_DATA_ROOT HERE_I_AM_VOICE_DATA_ROOT
+APP_BUILD_COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || printf unknown)"
+APP_BUILD_DATE="$(git -C "$SOURCE_DIR" show -s --format=%cI HEAD 2>/dev/null || true)"
+export APP_BUILD_COMMIT APP_BUILD_DATE
 
 bridge_token_works() {
   local url="$1" status
@@ -37,13 +44,23 @@ bridge_token_works() {
 }
 
 restart_stale_bridge() {
-  local service="$1" url="$2" health_url="$3" pid_file
+  local service="$1" url="$2" health_url="$3" pid_file expected command
   pid_file="$RUN_DIR/$service.pid"
+  case "$service" in
+    voice) expected='mlx_voice_bridge' ;;
+    ollama-control) expected='ollama_control_bridge' ;;
+    *) echo "Unknown bridge service: $service" >&2; exit 1 ;;
+  esac
   if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 && ! bridge_token_works "$url"; then
     if [[ -s "$pid_file" ]]; then
       local pid
       pid="$(tr -cd '0-9' <"$pid_file")"
-      [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+      command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if [[ -z "$pid" || "$command" != *"$expected"* ]]; then
+        echo "$service has a stale or mismatched PID file; refusing to signal another process." >&2
+        exit 1
+      fi
+      kill "$pid" 2>/dev/null || true
       for _ in $(seq 1 20); do curl -fsS --max-time 1 "$health_url" >/dev/null 2>&1 || break; sleep 0.25; done
     else
       echo "$service is running with a different bridge token and was not started by this launcher." >&2

@@ -27,6 +27,24 @@ jobs:
       - run: docker build --target test -t here-i-am-test .
       - run: docker run --rm here-i-am-test
 
+  browser-webkit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install -r app/requirements.txt
+      - run: npm ci
+      - run: npx playwright install --with-deps webkit
+      - run: npm run test:browser
+
   image-scan:
     runs-on: ubuntu-latest
     steps:

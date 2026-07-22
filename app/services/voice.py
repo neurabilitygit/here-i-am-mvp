@@ -65,6 +65,15 @@ def list_voice_candidates(limit: int = 12) -> list[VoiceCandidate]:
         paths = session_paths(session)
         if not paths['audio'].exists() or not paths['transcript'].exists():
             continue
+        try:
+            state = json.loads(paths['state'].read_text(encoding='utf-8')) if paths['state'].exists() else {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        # Conversation references are extracted from confirmed per-speaker time
+        # intervals by the speaker workflow. A fixed clip from the combined
+        # recording could clone the interviewer or a mixture of both voices.
+        if state.get('recording_mode', 'solo') == 'conversation':
+            continue
         duration = _duration(paths['audio'])
         words = _transcript_words(paths['transcript'])
         if duration < 20 or words < 30:

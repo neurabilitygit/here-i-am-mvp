@@ -7,10 +7,11 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from config import settings
 from models.schemas import ReconciliationIssue, ReconciliationReport, SessionDetail, SessionSummary
-from services.storage import load_json, safe_session_dir, session_paths
+from services.storage import atomic_write_text, load_json, safe_session_dir, session_paths
 
 
 def _modified_at(paths: list[Path]):
@@ -185,30 +186,40 @@ def build_session_export(session_id: str) -> Path:
     return export_path
 
 
-def create_structured_backup() -> dict:
+def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        while chunk := handle.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def create_structured_backup(progress: Callable[[int, int, str], None] | None = None) -> dict:
     root = Path(settings.data_root)
     backup_root = Path(settings.backup_root)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     target = backup_root / stamp
     target.mkdir(parents=True, exist_ok=False)
     manifest: list[dict] = []
-    for source in sorted(Path(settings.sessions_dir).rglob('*')):
-        # ExFAT/iCloud may leave unreadable AppleDouble sidecars. Filter by
-        # supported filename before stat-ing and treat filesystem artifacts as
-        # non-authoritative rather than allowing a backup to fail.
-        if source.name.startswith('._'):
-            continue
-        try:
-            if not source.is_file():
+
+    def source_files(source_root: Path) -> list[Path]:
+        if not source_root.exists():
+            return []
+        files: list[Path] = []
+        for source in sorted(source_root.rglob('*')):
+            if source.name.startswith('._'):
                 continue
-        except OSError:
-            continue
-        relative = source.relative_to(root)
-        destination = target / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        digest = hashlib.sha256(destination.read_bytes()).hexdigest()
-        manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': digest})
+            try:
+                if source.is_file():
+                    files.append(source)
+            except OSError:
+                continue
+        return files
+
+    authoritative_files = [
+        *source_files(Path(settings.sessions_dir)),
+        *source_files(Path(settings.archive_dir)),
+    ]
     appdata = root / 'appdata'
     excluded_roots = {
         Path(settings.chroma_dir).resolve(),
@@ -218,63 +229,92 @@ def create_structured_backup() -> dict:
         Path(settings.exports_dir).resolve(),
         (appdata / 'models').resolve(),
     }
-    for source in sorted(appdata.rglob('*')):
+    appdata_files: list[Path] = []
+    for source in source_files(appdata):
         try:
             resolved = source.resolve()
-            if source.name.startswith('._') or not source.is_file():
-                continue
             if any(resolved == excluded or excluded in resolved.parents for excluded in excluded_roots):
                 continue
         except OSError:
             continue
-        relative = source.relative_to(root)
-        destination = target / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': hashlib.sha256(destination.read_bytes()).hexdigest()})
+        appdata_files.append(source)
 
     from services.pipeline import chroma_collection
 
     collection = chroma_collection()
-    vector_data = collection.get(include=['documents', 'metadatas', 'embeddings'])
-    vector_documents = vector_data.get('documents') or []
-    vector_metadatas = vector_data.get('metadatas') or []
-    vector_embeddings = vector_data.get('embeddings')
+    vector_count = collection.count()
+    total_items = len(authoritative_files) + len(appdata_files) + vector_count
+    processed = 0
+
+    def report(message: str) -> None:
+        if progress:
+            progress(processed, total_items, message)
+
+    for source in authoritative_files:
+        # ExFAT/iCloud may leave unreadable AppleDouble sidecars. Filter by
+        # supported filename before stat-ing and treat filesystem artifacts as
+        # non-authoritative rather than allowing a backup to fail.
+        relative = source.relative_to(root)
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        digest = _sha256_file(destination)
+        manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': digest})
+        processed += 1
+        report(f'Copied {relative}')
+    for source in appdata_files:
+        relative = source.relative_to(root)
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': _sha256_file(destination)})
+        processed += 1
+        report(f'Copied {relative}')
+
     vector_export = target / 'appdata' / 'chroma-export.jsonl'
     vector_export.parent.mkdir(parents=True, exist_ok=True)
     with vector_export.open('w', encoding='utf-8') as handle:
-        for index, identifier in enumerate(vector_data.get('ids') or []):
-            record = {
-                'id': identifier,
-                'document': vector_documents[index],
-                'metadata': vector_metadatas[index],
-                'embedding': (
-                    vector_embeddings[index].tolist()
-                    if hasattr(vector_embeddings[index], 'tolist')
-                    else vector_embeddings[index]
-                ),
-            }
-            handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+        page_size = 128
+        for offset in range(0, vector_count, page_size):
+            vector_data = collection.get(
+                limit=min(page_size, vector_count - offset),
+                offset=offset,
+                include=['documents', 'metadatas', 'embeddings'],
+            )
+            vector_documents = vector_data.get('documents') or []
+            vector_metadatas = vector_data.get('metadatas') or []
+            vector_embeddings = vector_data.get('embeddings')
+            for index, identifier in enumerate(vector_data.get('ids') or []):
+                embedding = vector_embeddings[index]
+                record = {
+                    'id': identifier,
+                    'document': vector_documents[index],
+                    'metadata': vector_metadatas[index],
+                    'embedding': embedding.tolist() if hasattr(embedding, 'tolist') else embedding,
+                }
+                handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+                processed += 1
+            report(f'Exported {min(offset + page_size, vector_count)} of {vector_count} Chroma records')
         handle.flush()
         import os
         os.fsync(handle.fileno())
     manifest.append({
         'path': str(vector_export.relative_to(target)),
         'bytes': vector_export.stat().st_size,
-        'sha256': hashlib.sha256(vector_export.read_bytes()).hexdigest(),
+        'sha256': _sha256_file(vector_export),
     })
     manifest_path = target / 'manifest.json'
     try:
         same_volume = root.stat().st_dev == backup_root.stat().st_dev
     except OSError:
         same_volume = root.resolve() in backup_root.resolve().parents or backup_root.resolve() == root.resolve()
-    manifest_path.write_text(json.dumps({
+    atomic_write_text(manifest_path, json.dumps({
         'created_at': datetime.now(timezone.utc).isoformat(),
         'backup_kind': 'full-rebuildable',
         'chroma_collection': settings.chroma_collection,
         'same_volume_as_source': same_volume,
         'files': manifest,
-    }, indent=2), encoding='utf-8')
+    }, indent=2))
     return {
         'backup_id': stamp,
         'backup_kind': 'full-rebuildable',

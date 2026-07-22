@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     app_name: str = 'Here I Am'
+    app_build_commit: str = 'unknown'
+    app_build_date: str = ''
     host: str = '0.0.0.0'
     port: int = 8787
     data_root: str = '/data'
@@ -82,6 +84,7 @@ class Settings(BaseSettings):
     cors_origins: str = 'http://localhost:8787,http://127.0.0.1:8787'
     trusted_hosts: str = 'localhost,127.0.0.1,testserver,host.docker.internal'
     log_level: str = 'INFO'
+    jsonl_rotate_bytes: int = 10 * 1024 * 1024
 
     @property
     def cors_origin_list(self) -> list[str]:

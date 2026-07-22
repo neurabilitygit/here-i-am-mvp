@@ -64,6 +64,18 @@ def test_background_voice_is_single_flight_in_the_browser():
     assert "label.textContent = preparing ? 'Preparing' : ready ? 'Ready—Play' : 'Play'" in script
 
 
+def test_voice_completion_is_bound_to_the_answer_that_requested_it():
+    root = Path(__file__).parents[1]
+    script = (root / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
+    core = (root / 'app' / 'static' / 'app-core.js').read_text(encoding='utf-8')
+
+    assert "if (state.voicePreparing || state.voicePlaying) stopSpeaking();" in script
+    assert 'state.chatGeneration !== answerGeneration' in script
+    assert 'state.lastAnswer !== answerText' in script
+    assert "voice_prepare_discarded" in script
+    assert 'voiceGeneration' in core
+
+
 def test_completed_voice_uses_unlocked_web_audio_and_explicit_states():
     root = Path(__file__).parents[1]
     script_path = root / 'app' / 'static' / 'app.js'

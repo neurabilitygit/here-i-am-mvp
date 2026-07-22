@@ -12,7 +12,8 @@ from pathlib import Path
 
 from config import settings
 from models.schemas import AnswerFeedback, SpeakerFingerprint
-from services.storage import atomic_write_text, list_session_dirs, session_paths
+from services.jsonl_store import append_jsonl
+from services.storage import atomic_write_text, list_session_dirs, load_json, session_paths
 
 
 _feedback_lock = threading.Lock()
@@ -55,12 +56,32 @@ def build_speaker_fingerprint() -> SpeakerFingerprint:
         paths = session_paths(session)
         if not paths['transcript'].exists():
             continue
-        text = _plain_transcript(paths['transcript'])
+        state = load_json(paths['state']) if paths['state'].exists() else {}
+        recording_mode = state.get('recording_mode', 'solo')
+        conversation_seconds = 0.0
+        if recording_mode == 'conversation':
+            if state.get('speaker_review_status') != 'complete' or not paths['memory_units'].exists():
+                continue
+            units = [
+                json.loads(line)
+                for line in paths['memory_units'].read_text(encoding='utf-8').splitlines()
+                if line.strip()
+            ]
+            text = ' '.join(str(unit.get('subject_evidence') or '').strip() for unit in units).strip()
+            conversation_seconds = sum(
+                max(0.0, float(unit.get('end', 0)) - float(unit.get('start', 0)))
+                for unit in units
+            )
+        else:
+            text = _plain_transcript(paths['transcript'])
         if not text:
             continue
         texts.append(text)
         words = [word.lower() for word in WORD_RE.findall(text)]
-        if paths['audio'].exists():
+        if recording_mode == 'conversation' and conversation_seconds >= 10:
+            total_audio_seconds += conversation_seconds
+            timed_words += len(words)
+        elif recording_mode != 'conversation' and paths['audio'].exists():
             duration = _audio_duration(paths['audio'])
             if duration and duration >= 10:
                 total_audio_seconds += duration
@@ -132,6 +153,5 @@ def save_answer_feedback(feedback: AnswerFeedback) -> dict:
     path = Path(settings.feedback_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _feedback_lock:
-        prior = path.read_text(encoding='utf-8') if path.exists() else ''
-        atomic_write_text(path, prior + json.dumps(record, ensure_ascii=False) + '\n')
+        append_jsonl(path, record)
     return {'status': 'saved'}

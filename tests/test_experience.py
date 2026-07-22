@@ -7,7 +7,7 @@ from services.fidelity import build_speaker_fingerprint, save_answer_feedback
 from services.pipeline import direct_evidence_text, is_broad_personal_synthesis, lexical_personal_context, personal_evidence_is_sufficient, personal_retrieval_plan, route_question_without_model, voice_profile_text
 from services.preferences import cloud_api_key, load_preferences, save_preferences, set_runtime_cloud_key
 from services.providers import LocalProvider, OpenAIProvider, provider_for, public_provider_error, validate_provider_selection
-from services.storage import create_session_dir, session_paths
+from services.storage import create_session_dir, session_paths, update_processing_state
 
 
 def test_preferences_round_trip_without_secret_persistence():
@@ -251,6 +251,29 @@ def test_fingerprint_uses_reviewed_transcripts():
     assert fingerprint.word_count > 10
     assert fingerprint.average_sentence_words > 0
     assert Path(settings.fidelity_profile_path).exists()
+
+
+def test_conversation_fingerprint_uses_only_confirmed_subject_evidence(monkeypatch):
+    _session_id, session = create_session_dir('conversation fingerprint')
+    paths = session_paths(session)
+    paths['transcript'].write_text(
+        '**Interviewer:** What private vocabulary do you use?\n\n'
+        '**Eric:** I remember summer afternoons with my family.\n',
+        encoding='utf-8',
+    )
+    paths['memory_units'].write_text(json.dumps({
+        'subject_evidence': 'I remember summer afternoons with my family.',
+        'start': 4.0,
+        'end': 10.0,
+    }) + '\n', encoding='utf-8')
+    update_processing_state(session, recording_mode='conversation', speaker_review_status='complete')
+    monkeypatch.setattr('services.fidelity.list_session_dirs', lambda: [session])
+
+    fingerprint = build_speaker_fingerprint()
+
+    assert fingerprint.transcript_count == 1
+    assert fingerprint.word_count == 7
+    assert fingerprint.question_rate == 0
 
 
 def test_feedback_is_append_only_jsonl():

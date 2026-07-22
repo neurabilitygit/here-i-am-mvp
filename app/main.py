@@ -133,6 +133,14 @@ def health() -> GenericStatus:
     return GenericStatus(status='ok', detail='Application is healthy')
 
 
+@app.get('/api/version')
+def version():
+    return {
+        'commit': settings.app_build_commit,
+        'build_date': settings.app_build_date,
+    }
+
+
 @app.post('/api/activity-events', status_code=202)
 def post_activity_event(payload: ClientActivityEvent, request: Request):
     record_activity(payload, request_id=getattr(request.state, 'request_id', ''))
@@ -821,4 +829,27 @@ def start_reindex_job(confirm: bool = Query(default=False)):
 
 @app.post('/api/backups/structured')
 def structured_backup():
-    return create_structured_backup()
+    try:
+        job = job_manager.create(mode='structured-backup', message='Queued full safety copy')
+    except JobConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    def run_backup() -> None:
+        job_manager.update(job.id, status='running', message='Preparing the safety copy')
+
+        def progress(processed: int, total: int, message: str) -> None:
+            job_manager.update(job.id, processed=processed, total=total, message=message)
+
+        result = create_structured_backup(progress=progress)
+        current_job = job_manager.get(job.id)
+        job_manager.update(
+            job.id,
+            status='done',
+            completed=True,
+            processed=current_job.total if current_job else 0,
+            message='Full safety copy completed',
+            result=result,
+        )
+
+    job_manager.run_in_thread(job.id, run_backup)
+    return job
