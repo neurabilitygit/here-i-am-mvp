@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     voice_host_data_root: str = '/Volumes/Personal/here-i-am'
     elevenlabs_api_key: str = ''
     elevenlabs_voice_id: str = ''
-    elevenlabs_model: str = 'eleven_flash_v2_5'
+    elevenlabs_model: str = 'eleven_multilingual_v2'
     speaker_diarization_provider: Literal['openai', 'disabled'] = 'openai'
     speaker_diarization_model: str = 'gpt-4o-transcribe-diarize'
     speaker_diarization_timeout_seconds: int = 900

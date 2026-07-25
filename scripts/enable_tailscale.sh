@@ -31,7 +31,7 @@ DNS_NAME="$(tailscale status --json | python3 -c 'import json,sys; print(json.lo
 }
 
 echo "Configuring tailscale serve to forward https://$DNS_NAME -> $LOCAL_APP_URL"
-tailscale serve --bg https / "$LOCAL_APP_URL"
+tailscale serve --bg "$LOCAL_APP_URL"
 
 if ! curl -fsS --max-time 5 "https://$DNS_NAME/api/health" >/dev/null 2>&1; then
   echo "Warning: https://$DNS_NAME/api/health did not respond yet." >&2
