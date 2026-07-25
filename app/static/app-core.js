@@ -52,6 +52,7 @@ async function api(url, options = {}) {
   if (animate) window.beginFetchTask();
   try {
     const response = await fetch(url, options);
+    if (response.status === 401) document.dispatchEvent(new CustomEvent('here-i-am:auth-required'));
     const contentType = response.headers.get('content-type') || '';
     const data = contentType.includes('application/json') ? await response.json() : await response.text();
     if (!response.ok) throw new Error(typeof data === 'object' ? data.detail || JSON.stringify(data) : data);

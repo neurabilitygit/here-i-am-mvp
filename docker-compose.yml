@@ -32,6 +32,10 @@ services:
       OLLAMA_CONTROL_URL: http://host.docker.internal:8778
       VOICE_BRIDGE_URL: http://host.docker.internal:8779
       LOCAL_BRIDGE_TOKEN: ${LOCAL_BRIDGE_TOKEN:-here-i-am-local-v1}
+      AUTH_PASSPHRASE_HASH_FILE: ${AUTH_PASSPHRASE_HASH_FILE:-/run/secrets/auth_passphrase_hash}
+      AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-2592000}
+      AUTH_MAX_FAILED_ATTEMPTS: ${AUTH_MAX_FAILED_ATTEMPTS:-10}
+      AUTH_LOCKOUT_SECONDS: ${AUTH_LOCKOUT_SECONDS:-900}
       VOICE_HOST_DATA_ROOT: ${VOICE_HOST_DATA_ROOT:-/Volumes/Personal/here-i-am}
       OLLAMA_CHAT_MODEL: gemma4:e4b
       OLLAMA_ANALYSIS_MODEL: gemma4:e4b
@@ -71,10 +75,12 @@ services:
       VOICE_BATCH_TIMEOUT_SECONDS: 900
       CHROMA_COLLECTION: here_i_am_chunks
       CHROMA_MIGRATION_COLLECTION: here_i_am_chunks_v2
-      CORS_ORIGINS: http://localhost:8787,http://127.0.0.1:8787
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8787,http://127.0.0.1:8787}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1,testserver,host.docker.internal}
     volumes:
       - ${HERE_I_AM_DATA_DIR:-/Volumes/Personal/here-i-am}:/data
       - ${OPENAI_API_KEY_HOST_FILE:-/dev/null}:/run/secrets/openai_api_key:ro
+      - ${AUTH_PASSPHRASE_HASH_HOST_FILE:-/dev/null}:/run/secrets/auth_passphrase_hash:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     cap_drop:

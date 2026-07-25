@@ -24,7 +24,8 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 from config import settings
-from models.schemas import AnswerFeedback, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, ClientActivityEvent, GenericStatus, PreferencesUpdate, ProviderStatus, RecordingUploadResponse, ReconciliationReport, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
+from models.schemas import AnswerFeedback, AuthLoginRequest, AuthStatus, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, ClientActivityEvent, GenericStatus, PreferencesUpdate, ProviderStatus, RecordingUploadResponse, ReconciliationReport, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
+from services.auth import SESSION_COOKIE_NAME, is_locked_out, issue_token, passphrase_configured, register_failure, register_success, requires_auth, revoke_token, validate_token, verify_passphrase
 from services.jobs import JobConflictError, job_manager
 from services.library import build_session_export, create_structured_backup, get_session, list_sessions, reconciliation_report
 from services.ollama_client import ollama_client
@@ -91,8 +92,12 @@ async def request_observability(request: Request, call_next):
         or request.url.path == '/api/memory-batch/start'
         or request.url.path == '/api/activity-events'
         or request.url.path.startswith('/api/voice/cancel/')
+        or request.url.path in {'/api/auth/login', '/api/auth/logout'}
     )
-    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and origin and origin not in settings.cors_origin_list:
+    session_token = request.cookies.get(SESSION_COOKIE_NAME, '')
+    if requires_auth(request.method, request.url.path) and not validate_token(session_token):
+        response = JSONResponse(status_code=401, content={'detail': 'Authentication required'})
+    elif request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and origin and origin not in settings.cors_origin_list:
         response = JSONResponse(status_code=403, content={'detail': 'Cross-origin changes are not allowed'})
     elif job_manager.is_active('memory-batch') and request.url.path.startswith('/api/') and not batch_allowed:
         response = JSONResponse(
@@ -131,6 +136,42 @@ def health() -> GenericStatus:
     if not Path(settings.data_root).exists():
         raise HTTPException(status_code=500, detail=f'Data root is missing: {settings.data_root}')
     return GenericStatus(status='ok', detail='Application is healthy')
+
+
+@app.post('/api/auth/login', response_model=AuthStatus)
+def login(payload: AuthLoginRequest, response: Response):
+    if is_locked_out():
+        raise HTTPException(status_code=429, detail='Too many attempts. Try again later.')
+    if not passphrase_configured() or not verify_passphrase(payload.passphrase):
+        register_failure()
+        raise HTTPException(status_code=401, detail='Incorrect passphrase')
+    register_success()
+    token = issue_token(label='device')
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=settings.auth_token_ttl_seconds,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite='lax',
+        path='/',
+    )
+    return AuthStatus(authenticated=True, required=True)
+
+
+@app.get('/api/auth/status', response_model=AuthStatus)
+def auth_status(request: Request):
+    return AuthStatus(
+        authenticated=validate_token(request.cookies.get(SESSION_COOKIE_NAME, '')),
+        required=passphrase_configured(),
+    )
+
+
+@app.post('/api/auth/logout', response_model=GenericStatus)
+def logout(request: Request, response: Response):
+    revoke_token(request.cookies.get(SESSION_COOKIE_NAME, ''))
+    response.delete_cookie(SESSION_COOKIE_NAME, path='/')
+    return GenericStatus(status='ok', detail='Logged out')
 
 
 @app.get('/api/version')

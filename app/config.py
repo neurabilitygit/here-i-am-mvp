@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     voice_provider: str = 'disabled'
     voice_bridge_url: str = 'http://host.docker.internal:8779'
     local_bridge_token: str = 'here-i-am-local-v1'
+    auth_passphrase_hash_file: str = ''
+    auth_tokens_path: str = '/data/appdata/auth_tokens.json'
+    auth_token_ttl_seconds: int = 2_592_000
+    auth_max_failed_attempts: int = 10
+    auth_lockout_seconds: int = 900
+    auth_cookie_secure: bool = True
     voice_host_data_root: str = '/Volumes/Personal/here-i-am'
     elevenlabs_api_key: str = ''
     elevenlabs_voice_id: str = ''

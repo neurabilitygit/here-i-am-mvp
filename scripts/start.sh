@@ -29,6 +29,13 @@ if [[ ! -s "$BRIDGE_TOKEN_FILE" ]]; then
 fi
 LOCAL_BRIDGE_TOKEN="$(tr -d '\r\n' <"$BRIDGE_TOKEN_FILE")"
 export LOCAL_BRIDGE_TOKEN
+AUTH_PASSPHRASE_HASH_FILE_PATH="$SECRET_DIR/auth_passphrase_hash"
+if [[ ! -s "$AUTH_PASSPHRASE_HASH_FILE_PATH" ]]; then
+  echo "No login passphrase is configured. Run './scripts/set_passphrase.py' once, then re-run start.sh." >&2
+  exit 1
+fi
+AUTH_PASSPHRASE_HASH_HOST_FILE="$AUTH_PASSPHRASE_HASH_FILE_PATH"
+export AUTH_PASSPHRASE_HASH_HOST_FILE
 HERE_I_AM_DATA_DIR="$DATA_DIR"
 VOICE_HOST_DATA_ROOT="$DATA_DIR"
 HERE_I_AM_VOICE_DATA_ROOT="$DATA_DIR"

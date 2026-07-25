@@ -11,7 +11,10 @@ module.exports = defineConfig({
     baseURL: 'http://127.0.0.1:8791',
     trace: 'retain-on-failure',
   },
-  projects: [{name: 'webkit', use: {...devices['Desktop Safari']}}],
+  projects: [
+    {name: 'webkit', use: {...devices['Desktop Safari']}},
+    {name: 'mobile-safari', use: {...devices['iPhone 13']}},
+  ],
   webServer: {
     command: 'bash scripts/start_browser_test_server.sh',
     url: 'http://127.0.0.1:8791/api/health',

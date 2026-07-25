@@ -197,7 +197,7 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
   .brand span:last-child { display: none; }.app-bar { padding: .6rem; }.icon-button, .close-button { width: 48px; height: 48px; }
   .portrait-world { min-height: 300px; }.portrait-button { width: 235px; }.orbit-outer { width: 270px; }.orbit-inner { width: 200px; }
   .experience { padding-inline: .7rem; }.conversation-dock { grid-template-columns: 52px 1fr 52px; }.dock-mic, .dock-send { width: 52px; height: 52px; }
-  .memory-heading { align-items: stretch; flex-direction: column; }.search-memory { width: 100%; }.memory-queue,.memory-import { grid-template-columns: auto 1fr; }.memory-queue .primary-wide,.memory-upload-button,.import-mode { grid-column: 1 / -1; }.memory-upload-status { grid-column: 1 / -1; }.memory-gallery { grid-auto-columns: 82%; }.settings-grid, .avatar-controls,.avatar-choice-grid { grid-template-columns: 1fr; }.detail-actions { grid-template-columns: 1fr; }.recording-mode { grid-template-columns: 1fr 1fr; }
+  .memory-heading { align-items: stretch; flex-direction: column; }.search-memory { width: 100%; }.memory-queue,.memory-import { grid-template-columns: auto 1fr; }.memory-queue .primary-wide,.memory-upload-button,.import-mode { grid-column: 1 / -1; }.memory-upload-status { grid-column: 1 / -1; }.memory-gallery { grid-auto-columns: 82%; }.settings-grid, .avatar-controls,.avatar-choice-grid { grid-template-columns: 1fr; }.detail-actions { grid-template-columns: 1fr; }.recording-mode { grid-template-columns: 1fr; }
   .world-nav button { flex-direction: column; gap: .15rem; font-size: .78rem; }.world-nav { border-radius: 25px; }.scene-card { border-radius: 28px; }
 }
 body.reduce-motion .import-sound i { animation: none; }
