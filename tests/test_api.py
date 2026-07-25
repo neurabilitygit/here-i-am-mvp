@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from io import BytesIO
 import time
@@ -9,7 +10,7 @@ import main
 from config import settings
 from models.schemas import BenchmarkAnswer, ChatBenchmarkResponse, ChatResponse
 from services.preferences import load_preferences
-from services.storage import ensure_directories
+from services.storage import atomic_write_text, create_session_dir, ensure_directories, save_json, session_paths, update_processing_state
 
 
 client = TestClient(main.app)
@@ -252,3 +253,55 @@ def test_voice_cancel_contract(monkeypatch):
 
     invalid = client.post('/api/voice/cancel/not%20valid')
     assert invalid.status_code == 400
+
+
+def test_seal_endpoint_requires_future_unlock_at():
+    _, session = create_session_dir('Seal validation test')
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    response = client.post(f'/api/sessions/{session.name}/seal', json={'unlock_at': past})
+    assert response.status_code == 400
+
+
+def test_sealed_session_detail_omits_transcript_and_metadata_before_unlock():
+    _, session = create_session_dir('Sealed detail test')
+    paths = session_paths(session)
+    atomic_write_text(paths['transcript'], 'A secret memory that should stay hidden.')
+    save_json(paths['metadata'], {'title': 'Sealed detail test', 'summary': 'secret'})
+
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    seal = client.post(f'/api/sessions/{session.name}/seal', json={'unlock_at': future})
+    assert seal.status_code == 200
+
+    sealed_detail = client.get(f'/api/sessions/{session.name}').json()
+    assert sealed_detail['sealed'] is True
+    assert sealed_detail['transcript'] is None
+    assert sealed_detail['metadata'] == {}
+    assert not any(item['session_id'] == session.name for item in client.get('/api/sessions').json())
+
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    update_processing_state(session, unlock_at=past)
+    unsealed_detail = client.get(f'/api/sessions/{session.name}').json()
+    assert unsealed_detail['sealed'] is False
+    assert unsealed_detail['transcript'] == 'A secret memory that should stay hidden.'
+    assert unsealed_detail['metadata']['summary'] == 'secret'
+
+
+def test_simple_engagement_endpoints_return_expected_shapes():
+    assert isinstance(client.get('/api/sessions/on-this-day').json(), list)
+    gap_response = client.get('/api/sessions/gap').json()
+    assert 'days_since_last_recording' in gap_response
+    assert isinstance(client.get('/api/sessions/sealed').json(), list)
+    prompt_response = client.get('/api/prompts/today').json()
+    assert isinstance(prompt_response.get('prompt'), str) and prompt_response['prompt']
+
+    _, session = create_session_dir('Related smoke test')
+    related_response = client.get(f'/api/sessions/{session.name}/related')
+    assert related_response.status_code == 200
+    assert isinstance(related_response.json(), list)
+
+
+def test_quiz_prompt_endpoint_returns_null_when_no_eligible_sessions(monkeypatch):
+    monkeypatch.setattr(main, 'sample_quiz_prompt', lambda: None)
+    response = client.get('/api/quiz/prompt')
+    assert response.status_code == 200
+    assert response.json() is None

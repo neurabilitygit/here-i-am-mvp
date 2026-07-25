@@ -24,7 +24,7 @@ const state = {
   fetchStartedAt: 0, fetchPoint: null, fetchMotionActive: false, fetchLoopRunning: false,
   fetchAnimations: [], fetchSitTimer: null, fetchSitResolve: null,
   activityFetchHeld: false, voiceFetchHeld: false,
-  memoryBatch: null, batchWatching: false, batchPollTimer: null,
+  memoryBatch: null, batchWatching: false, batchPollTimer: null, memoriesView: 'grid', activeQuizPrompt: null,
   speakers: [], activeSpeakerId: null, activeSpeakerReviewId: null,
   pageId, activitySequence: 0, chatRequestId: null,
 };
