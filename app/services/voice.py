@@ -229,9 +229,11 @@ def synthesize(text: str, speed: float = 1.0, request_id: str = '') -> tuple[byt
         if not settings.elevenlabs_api_key or not voice_id:
             raise RuntimeError('The ElevenLabs voice is not configured')
         # eleven_flash_v2_5 at stability 0.55 read noticeably fast and thin;
-        # eleven_multilingual_v2 is ElevenLabs' higher-fidelity model, and a
-        # higher stability plus a slight speed pullback correct the pacing.
-        elevenlabs_speed = round(min(max(speed * 0.9, 0.7), 1.2), 2)
+        # eleven_multilingual_v2 is ElevenLabs' higher-fidelity model. A 0.9x
+        # speed pullback overcorrected to noticeably slow, so pass the
+        # requested speed through as-is (1.0 = normal), just clamped to
+        # ElevenLabs' valid 0.7-1.2 range.
+        elevenlabs_speed = round(min(max(speed, 0.7), 1.2), 2)
         response = requests.post(
             f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream',
             params={'output_format': 'mp3_44100_128', 'enable_logging': 'false'},
