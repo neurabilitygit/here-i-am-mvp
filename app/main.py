@@ -152,7 +152,13 @@ def login(payload: AuthLoginRequest, response: Response):
         value=token,
         max_age=settings.auth_token_ttl_seconds,
         httponly=True,
-        secure=settings.auth_cookie_secure,
+        # Not `secure`: Tailscale's `serve` terminates HTTPS externally but
+        # forwards plain HTTP to this app internally, and local access is
+        # plain http://127.0.0.1 too. Transport confidentiality comes from
+        # loopback binding and Tailscale's WireGuard tunnel, not app-level
+        # TLS; a `Secure` cookie would be silently dropped by strict clients
+        # (observed: Safari over http://127.0.0.1 never persisted the
+        # session, making every post-login request 401 and re-show login).
         samesite='lax',
         path='/',
     )

@@ -16,9 +16,6 @@ def _configure_auth(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'auth_tokens_path', str(tmp_path / 'auth_tokens.json'))
     monkeypatch.setattr(settings, 'auth_max_failed_attempts', 3)
     monkeypatch.setattr(settings, 'auth_lockout_seconds', 900)
-    # httpx's cookie jar (unlike real browsers) withholds Secure cookies on
-    # the plain-http TestClient transport; disable Secure only for this check.
-    monkeypatch.setattr(settings, 'auth_cookie_secure', False)
     auth.register_success()  # clear lockout state left over from another test
     return TestClient(main.app)
 
