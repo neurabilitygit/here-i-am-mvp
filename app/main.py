@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import requests
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -24,16 +25,17 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 from config import settings
-from models.schemas import AnswerFeedback, AuthLoginRequest, AuthStatus, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, ClientActivityEvent, GenericStatus, PreferencesUpdate, ProviderStatus, RecordingUploadResponse, ReconciliationReport, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
+from models.schemas import AnswerFeedback, AuthLoginRequest, AuthStatus, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, ClientActivityEvent, GenericStatus, PreferencesUpdate, ProviderStatus, PromptOfTheDay, QuizPrompt, RecordingUploadResponse, ReconciliationReport, SealRequest, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
+from services.prompts import prompt_of_the_day
 from services.auth import SESSION_COOKIE_NAME, is_locked_out, issue_token, passphrase_configured, register_failure, register_success, requires_auth, revoke_token, validate_token, verify_passphrase
 from services.jobs import JobConflictError, job_manager
-from services.library import build_session_export, create_structured_backup, get_session, list_sessions, reconciliation_report
+from services.library import build_session_export, create_structured_backup, days_since_last_recording, get_session, list_sessions, on_this_day_sessions, reconciliation_report, sealed_sessions
 from services.ollama_client import ollama_client
 from services.fidelity import build_speaker_fingerprint, load_speaker_fingerprint, save_answer_feedback
-from services.pipeline import analyze_unprocessed, answer_question, benchmark_question, memory_queue_status, prepare_answer, process_memory_batch, reindex_to_migration_collection, stream_prepared_answer, transcribe_unprocessed
+from services.pipeline import analyze_unprocessed, answer_question, benchmark_question, memory_queue_status, prepare_answer, process_memory_batch, reindex_to_migration_collection, related_sessions, sample_quiz_prompt, stream_prepared_answer, transcribe_unprocessed
 from services.preferences import cloud_api_key, load_preferences, public_preferences, save_preferences, set_runtime_cloud_key
 from services.providers import active_provider, provider_status, public_provider_error, record_generation_failure, record_stream_audit, transition_provider, validate_provider_selection
-from services.storage import archive_session, create_session_dir, ensure_directories, list_session_dirs, revise_transcript, safe_session_dir, session_lock, session_paths, update_processing_state
+from services.storage import archive_session, create_session_dir, ensure_directories, list_session_dirs, revise_transcript, safe_session_dir, seal_until, session_lock, session_paths, update_processing_state
 from services.speakers import SpeakerWorkflowError, apply_speaker_assignments, create_speaker, list_speakers, speaker_review, speaker_sample
 from services.avatars import AvatarWorkflowError, active_avatar_path, generate_avatar, store_speaker_image, validate_avatar_generation
 from services.voice import LOCAL_BRIDGE_HEADERS, cancel_synthesis_stream, list_voice_candidates, load_voice_status, prepare_voice_reference, revoke_voice, synthesize
@@ -186,6 +188,16 @@ def version():
         'commit': settings.app_build_commit,
         'build_date': settings.app_build_date,
     }
+
+
+@app.get('/api/prompts/today', response_model=PromptOfTheDay)
+def prompt_today():
+    return PromptOfTheDay(prompt=prompt_of_the_day())
+
+
+@app.get('/api/quiz/prompt', response_model=QuizPrompt | None)
+def quiz_prompt():
+    return sample_quiz_prompt()
 
 
 @app.post('/api/activity-events', status_code=202)
@@ -795,10 +807,33 @@ def sessions():
     return list_sessions()
 
 
+@app.get('/api/sessions/on-this-day', response_model=list[SessionSummary])
+def sessions_on_this_day():
+    return on_this_day_sessions()
+
+
+@app.get('/api/sessions/gap')
+def sessions_gap():
+    return {'days_since_last_recording': days_since_last_recording()}
+
+
+@app.get('/api/sessions/sealed', response_model=list[SessionSummary])
+def sessions_sealed():
+    return sealed_sessions()
+
+
 @app.get('/api/sessions/{session_id}', response_model=SessionDetail)
 def session_detail(session_id: str, include_transcript: bool = True):
     try:
         return get_session(session_id, include_transcript=include_transcript)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get('/api/sessions/{session_id}/related')
+def session_related(session_id: str):
+    try:
+        return related_sessions(session_id)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -823,6 +858,21 @@ def archive(session_id: str, confirm: bool = Query(default=False)):
         return {'status': 'archived', 'session_id': session_id}
     except (FileNotFoundError, FileExistsError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post('/api/sessions/{session_id}/seal')
+def seal_session(session_id: str, payload: SealRequest):
+    if payload.unlock_at.tzinfo is None:
+        unlock_at = payload.unlock_at.replace(tzinfo=timezone.utc)
+    else:
+        unlock_at = payload.unlock_at.astimezone(timezone.utc)
+    if unlock_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail='unlock_at must be in the future')
+    try:
+        seal_until(safe_session_dir(session_id), unlock_at)
+        return {'status': 'sealed', 'session_id': session_id, 'unlock_at': unlock_at.isoformat()}
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get('/api/sessions/{session_id}/export')

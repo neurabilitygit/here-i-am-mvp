@@ -236,8 +236,9 @@ function showScene(name, reason = 'programmatic') {
     panel.classList.toggle('active', active);
   });
   document.querySelectorAll('[data-go]').forEach((button) => button.classList.toggle('active', button.dataset.go === name));
-  if (name === 'memories') Promise.all([refreshLibrary(), refreshMemoryQueue(), refreshSpeakers()]);
-  if (name === 'talk') byId('chat-question').focus();
+  if (name === 'memories') Promise.all([refreshLibrary(), refreshMemoryQueue(), refreshSpeakers(), refreshSealedLetters()]);
+  if (name === 'remember') refreshPromptOfTheDay();
+  if (name === 'talk') { byId('chat-question').focus(); refreshTalkBanners(); }
   else window.requestAnimationFrame(() => byId(`${name}-title`)?.focus());
   if (previous !== name) activity('scene_changed', {
     from: previous, to: name, reason, has_answer: Boolean(state.lastAnswer),
@@ -1023,6 +1024,14 @@ async function uploadRecording({unexpected=false}={}){
     const response = await api('/api/recordings/upload',{method:'POST',body:form});
     const sceneAtCompletion = document.body.dataset.scene || '';
     activity('recording_upload_completed', {unexpected, session_id: response.session_id, scene_at_completion: sceneAtCompletion});
+    if(byId('record-seal').checked&&byId('record-seal-date').value){
+      const dateValue=byId('record-seal-date').value;
+      try{
+        await api(`/api/sessions/${encodeURIComponent(response.session_id)}/seal`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({unlock_at:new Date(`${dateValue}T00:00:00`).toISOString()})});
+        activity('memory_sealed',{unlock_year_month:dateValue.slice(0,7)});
+      }catch(error){/* the memory itself is still saved even if sealing fails */}
+    }
+    byId('record-seal').checked=false;byId('record-seal-date-field').hidden=true;byId('record-seal-date').value='';
     resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value='';
     if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed');
     await Promise.all([refreshLibrary(),refreshMemoryQueue()]);
@@ -1286,21 +1295,203 @@ async function monitorMemoryBatch(job){
 
 function formatMemoryDate(sessionId){const match=sessionId.match(/^(\d{4})-(\d{2})-(\d{2})/);if(!match)return'';return new Date(`${match[1]}-${match[2]}-${match[3]}T12:00:00`).toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'});}
 
+function buildMemoryCard(session){
+  const button=document.createElement('button');button.type='button';button.className='memory-card';button.setAttribute('aria-label',`${session.title}. ${session.embedded?'Ready to answer questions':'Waiting for local preparation'}.`);
+  const date=document.createElement('small');date.textContent=formatMemoryDate(session.session_id);const title=document.createElement('h3');title.textContent=session.title;const status=document.createElement('div');status.className='memory-state';status.title=session.embedded?'Ready to answer questions':'Waiting for the local batch';
+  ['recorded','transcribed','embedded'].forEach((key)=>{const dot=document.createElement('span');dot.classList.toggle('ready',session[key]);status.append(dot)});button.append(date,title,status);button.addEventListener('click',()=>session.speaker_review_status==='needs_review'?openSpeakerReview(session.session_id):openMemory(session.session_id));
+  return button;
+}
+
+function filteredSessions(){
+  const query=byId('memory-search').value.trim().toLowerCase();
+  return state.sessions.filter((item)=>!query||item.title.toLowerCase().includes(query)||item.session_id.toLowerCase().includes(query));
+}
+
 function renderMemories(){
-  const query=byId('memory-search').value.trim().toLowerCase(); const sessions=state.sessions.filter((item)=>!query||item.title.toLowerCase().includes(query)||item.session_id.toLowerCase().includes(query));
-  const cards=sessions.map((session)=>{const button=document.createElement('button');button.type='button';button.className='memory-card';button.setAttribute('aria-label',`${session.title}. ${session.embedded?'Ready to answer questions':'Waiting for local preparation'}.`);
-    const date=document.createElement('small');date.textContent=formatMemoryDate(session.session_id);const title=document.createElement('h3');title.textContent=session.title;const status=document.createElement('div');status.className='memory-state';status.title=session.embedded?'Ready to answer questions':'Waiting for the local batch';
-    ['recorded','transcribed','embedded'].forEach((key)=>{const dot=document.createElement('span');dot.classList.toggle('ready',session[key]);status.append(dot)});button.append(date,title,status);button.addEventListener('click',()=>session.speaker_review_status==='needs_review'?openSpeakerReview(session.session_id):openMemory(session.session_id));return button;});
-  byId('memory-gallery').replaceChildren(...cards);byId('memory-summary').textContent=`${sessions.length} ${sessions.length===1?'memory':'memories'} in your story`;
+  const sessions=filteredSessions();
+  byId('memory-gallery').replaceChildren(...sessions.map(buildMemoryCard));
+  byId('memory-summary').textContent=`${sessions.length} ${sessions.length===1?'memory':'memories'} in your story`;
+}
+
+function renderMemoriesTimeline(){
+  const sessions=filteredSessions();
+  const byYear=new Map();
+  sessions.forEach((session)=>{
+    const year=session.session_id.slice(0,4);
+    if(!byYear.has(year))byYear.set(year,[]);
+    byYear.get(year).push(session);
+  });
+  const groups=[...byYear.keys()].sort((a,b)=>b.localeCompare(a)).map((year)=>{
+    const section=document.createElement('section');section.className='timeline-year';
+    const heading=document.createElement('h3');heading.textContent=year;section.append(heading);
+    const row=document.createElement('div');row.className='timeline-year-cards';row.append(...byYear.get(year).map(buildMemoryCard));section.append(row);
+    return section;
+  });
+  byId('memory-timeline').replaceChildren(...groups);
+  byId('memory-summary').textContent=`${sessions.length} ${sessions.length===1?'memory':'memories'} in your story`;
+}
+
+function renderActiveMemoriesView(){
+  if(state.memoriesView==='timeline'){byId('memory-gallery').hidden=true;byId('memory-timeline').hidden=false;renderMemoriesTimeline();}
+  else{byId('memory-timeline').hidden=true;byId('memory-gallery').hidden=false;renderMemories();}
+}
+
+function setMemoriesView(view){
+  state.memoriesView=view;
+  byId('memory-view-grid').setAttribute('aria-pressed',String(view==='grid'));
+  byId('memory-view-timeline').setAttribute('aria-pressed',String(view==='timeline'));
+  renderActiveMemoriesView();
+  activity('timeline_view_toggled',{view});
+}
+
+const TONE_BUCKETS=[
+  {key:'joyful',color:'var(--gold)',words:['joy','happy','warm','love','proud','grateful','delight','hope']},
+  {key:'difficult',color:'var(--coral)',words:['sad','loss','grief','hard','pain','fear','anger','regret','difficult']},
+  {key:'bittersweet',color:'var(--violet)',words:['bittersweet','mixed','complicated','nostalgi','wistful']},
+  {key:'calm',color:'var(--aqua)',words:['calm','peace','quiet','content','settled']},
+];
+
+function classifyTone(tone){
+  const text=(Array.isArray(tone)?tone.join(' '):String(tone||'')).toLowerCase();
+  if(!text.trim())return null;
+  for(const bucket of TONE_BUCKETS){if(bucket.words.some((word)=>text.includes(word)))return bucket;}
+  return {key:'neutral',color:'var(--muted)',words:[]};
+}
+
+function escapeXml(text){return String(text).replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));}
+
+function renderToneReflection(){
+  const panel=byId('tone-reflection');
+  const sessions=state.sessions.filter((session)=>session.recorded_at);
+  if(sessions.length<2){panel.hidden=true;return;}
+  const byMonth=new Map();
+  sessions.forEach((session)=>{
+    const bucket=classifyTone(session.emotional_tone);
+    if(!bucket)return;
+    const month=session.recorded_at.slice(0,7);
+    if(!byMonth.has(month))byMonth.set(month,[]);
+    byMonth.get(month).push({bucket,tone:session.emotional_tone,title:session.title});
+  });
+  const months=[...byMonth.keys()].sort();
+  if(!months.length){panel.hidden=true;return;}
+  const width=700,height=200,padding=30;
+  const colWidth=months.length>1?(width-padding*2)/(months.length-1):0;
+  const parts=[];
+  months.forEach((month,index)=>{
+    const x=months.length>1?padding+index*colWidth:width/2;
+    byMonth.get(month).forEach((entry,row)=>{
+      const y=height-padding-row*16;
+      const toneText=Array.isArray(entry.tone)?entry.tone.join(', '):String(entry.tone||'');
+      parts.push(`<circle cx="${x.toFixed(1)}" cy="${y}" r="6" fill="${entry.bucket.color}"><title>${escapeXml(entry.title)}: ${escapeXml(toneText)}</title></circle>`);
+    });
+    parts.push(`<text x="${x.toFixed(1)}" y="${height-8}" font-size="11" fill="var(--muted)" text-anchor="middle">${escapeXml(month)}</text>`);
+  });
+  byId('tone-chart').innerHTML=parts.join('');
+  panel.hidden=false;
+  activity('tone_reflection_viewed',{months:months.length});
+}
+
+const RETURN_NUDGE_DISMISSED_KEY = 'here-i-am:nudge-dismissed-until';
+const RETURN_NUDGE_DAYS = 21;
+
+async function refreshSealedLetters(){
+  try{
+    const letters=await api('/api/sessions/sealed');
+    const banner=byId('sealed-letters');
+    if(!letters.length){banner.hidden=true;return;}
+    const soonest=letters.map((letter)=>letter.unlock_at).filter(Boolean).sort()[0];
+    byId('sealed-letters-title').textContent=`${letters.length} ${letters.length===1?'letter is':'letters are'} waiting to unlock`;
+    byId('sealed-letters-detail').textContent=soonest?`The next one opens ${new Date(soonest).toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'})}.`:'';
+    banner.hidden=false;
+    activity('sealed_letters_viewed',{count:letters.length});
+  }catch(error){byId('sealed-letters').hidden=true;}
+}
+
+async function refreshOnThisDay(){
+  try{
+    const matches=await api('/api/sessions/on-this-day');
+    const banner=byId('on-this-day');
+    if(!matches.length){banner.hidden=true;return false;}
+    const session=matches[0];
+    const years=new Date().getFullYear()-Number(session.session_id.slice(0,4));
+    byId('on-this-day-title').textContent=session.title;
+    byId('on-this-day-detail').textContent=`You recorded this ${years===1?'a year':`${years} years`} ago today — ${formatMemoryDate(session.session_id)}.`;
+    byId('on-this-day-open').onclick=()=>openMemory(session.session_id);
+    banner.hidden=false;
+    activity('on_this_day_shown',{count:matches.length});
+    return true;
+  }catch(error){byId('on-this-day').hidden=true;return false;}
+}
+
+async function refreshReturnNudge(showIfEligible){
+  const banner=byId('return-nudge');
+  if(!showIfEligible){banner.hidden=true;return;}
+  const dismissedUntil=localStorage.getItem(RETURN_NUDGE_DISMISSED_KEY);
+  if(dismissedUntil&&new Date(dismissedUntil)>new Date()){banner.hidden=true;return;}
+  try{
+    const result=await api('/api/sessions/gap');
+    const days=result.days_since_last_recording;
+    if(days===null||days===undefined||days<RETURN_NUDGE_DAYS){banner.hidden=true;return;}
+    byId('return-nudge-title').textContent=`It's been ${days} days since your last recording.`;
+    banner.hidden=false;
+    activity('return_nudge_shown',{days_since_last_recording:days});
+  }catch(error){banner.hidden=true;}
+}
+
+async function refreshTalkBanners(){
+  const shownOnThisDay=await refreshOnThisDay();
+  await refreshReturnNudge(!shownOnThisDay);
+}
+
+async function refreshPromptOfTheDay(){
+  try{const result=await api('/api/prompts/today');byId('remember-prompt').textContent=result.prompt;activity('prompt_of_the_day_shown',{prompt_index:result.prompt.length});}
+  catch(error){byId('remember-prompt').textContent='';}
 }
 
 async function refreshLibrary(){
-  try{state.sessions=await api('/api/sessions');renderMemories();renderSpeakerReviewQueue();byId('library-status').textContent=state.sessions.length?'Choose any memory to read or change its words.':'Your first memory will appear here.';}
+  try{state.sessions=await api('/api/sessions');renderActiveMemoriesView();renderSpeakerReviewQueue();renderToneReflection();byId('library-status').textContent=state.sessions.length?'Choose any memory to read or change its words.':'Your first memory will appear here.';}
   catch(error){byId('library-status').textContent=error.message;}
 }
 
+async function openQuiz(){
+  const dialog=byId('quiz-dialog');
+  byId('quiz-title').textContent='';byId('quiz-quote').hidden=true;byId('quiz-quote').textContent='';
+  byId('quiz-reveal').hidden=false;byId('quiz-next').hidden=true;byId('quiz-status').textContent='Finding a memory…';
+  if(!dialog.open)dialog.showModal();
+  try{
+    const result=await api('/api/quiz/prompt');
+    if(!result){byId('quiz-status').textContent='No memories are ready to quiz yet.';byId('quiz-reveal').hidden=true;return;}
+    state.activeQuizPrompt=result;
+    byId('quiz-title').textContent=`Do you remember what you said about ${result.topic_hint}?`;
+    byId('quiz-status').textContent='';
+    activity('quiz_shown',{session_id:result.session_id});
+  }catch(error){byId('quiz-status').textContent=error.message;byId('quiz-reveal').hidden=true;}
+}
+
+function revealQuiz(){
+  if(!state.activeQuizPrompt)return;
+  byId('quiz-quote').textContent=state.activeQuizPrompt.quote;byId('quiz-quote').hidden=false;
+  byId('quiz-reveal').hidden=true;byId('quiz-next').hidden=false;
+  activity('quiz_revealed',{session_id:state.activeQuizPrompt.session_id});
+}
+
+function renderRelatedMemories(sources){
+  const section=byId('related-memories');
+  if(!sources||!sources.length){section.hidden=true;return;}
+  const links=sources.map((source)=>{
+    const button=document.createElement('button');button.type='button';button.className='text-button';
+    button.textContent=`${source.title} (${formatMemoryDate(source.session_id)})`;
+    button.addEventListener('click',()=>{byId('memory-dialog').close();openMemory(source.session_id);});
+    return button;
+  });
+  byId('related-memories-list').replaceChildren(...links);
+  section.hidden=false;
+  activity('related_memories_shown',{count:sources.length});
+}
+
 async function openMemory(sessionId){
-  try{const session=await api(`/api/sessions/${encodeURIComponent(sessionId)}`);state.activeSessionId=sessionId;const conversation=session.recording_mode==='conversation';byId('memory-dialog-title').textContent=session.title;byId('memory-meta').textContent=`${formatMemoryDate(sessionId)} · ${conversation?'Voice-labeled conversation · ':''}${session.embedded?'Ready for questions':'Waiting for the local batch'}`;byId('memory-transcript').value=session.transcript||'';byId('memory-transcript').disabled=!session.transcript||conversation;byId('memory-save').disabled=!session.transcript||conversation;byId('memory-export').href=`/api/sessions/${encodeURIComponent(sessionId)}/export`;byId('memory-dialog-status').textContent=conversation?'The labels preserve which words belong to the memory subject. Take a copy to review the full conversation.':session.transcript?'Every save keeps the earlier version safe.':'The words will appear after the local batch.';byId('memory-dialog').showModal();}
+  try{const session=await api(`/api/sessions/${encodeURIComponent(sessionId)}`);state.activeSessionId=sessionId;const conversation=session.recording_mode==='conversation';byId('memory-dialog-title').textContent=session.title;byId('memory-meta').textContent=`${formatMemoryDate(sessionId)} · ${conversation?'Voice-labeled conversation · ':''}${session.embedded?'Ready for questions':'Waiting for the local batch'}`;byId('memory-transcript').value=session.transcript||'';byId('memory-transcript').disabled=!session.transcript||conversation;byId('memory-save').disabled=!session.transcript||conversation;byId('memory-export').href=`/api/sessions/${encodeURIComponent(sessionId)}/export`;byId('memory-dialog-status').textContent=conversation?'The labels preserve which words belong to the memory subject. Take a copy to review the full conversation.':session.transcript?'Every save keeps the earlier version safe.':'The words will appear after the local batch.';byId('related-memories').hidden=true;byId('memory-dialog').showModal();
+  api(`/api/sessions/${encodeURIComponent(sessionId)}/related`).then(renderRelatedMemories).catch(()=>{});}
   catch(error){byId('library-status').textContent=error.message;}
 }
 
@@ -1360,10 +1551,13 @@ function bindEvents(){
   byId('text-size-button').addEventListener('click',async()=>{const order=['standard','large','largest'];state.preferences.text_scale=order[(order.indexOf(state.preferences.text_scale)+1)%order.length];applyPreferences();await api('/api/experience',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:state.preferences})});});
   byId('settings-save').addEventListener('click',()=>saveSettings());byId('setting-provider').addEventListener('change',saveProviderSelection);byId('avatar-save').addEventListener('click',saveAvatar);
   byId('chat-form').addEventListener('submit',(event)=>{event.preventDefault();askQuestion(byId('chat-question').value)});byId('chat-question').addEventListener('input',growQuestionBox);byId('chat-question').addEventListener('keydown',(event)=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();askQuestion(event.currentTarget.value)}});
-  document.querySelectorAll('#suggestions button').forEach((button)=>button.addEventListener('click',()=>askQuestion(button.textContent)));
+  document.querySelectorAll('#suggestions button:not(#quiz-open)').forEach((button)=>button.addEventListener('click',()=>askQuestion(button.textContent)));
+  byId('quiz-open').addEventListener('click',openQuiz);byId('quiz-close').addEventListener('click',()=>byId('quiz-dialog').close());byId('quiz-reveal').addEventListener('click',revealQuiz);byId('quiz-next').addEventListener('click',openQuiz);
   byId('voice-question').addEventListener('click',()=>state.speechRecognition?.start());byId('speak-answer').addEventListener('click',speakAnswer);byId('stop-speaking').addEventListener('click',stopSpeaking);byId('compare-answer').addEventListener('click',compareAnswers);byId('feedback-up').addEventListener('click',()=>sendFeedback('up'));byId('clear-answer').addEventListener('click',clearAnswer);
   byId('record-start').addEventListener('click',startRecording);byId('record-pause').addEventListener('click',pauseRecording);byId('record-stop').addEventListener('click',stopRecording);
-  byId('memory-search').addEventListener('input',renderMemories);byId('memory-save').addEventListener('click',saveMemory);
+  byId('record-seal').addEventListener('change',(event)=>{byId('record-seal-date-field').hidden=!event.currentTarget.checked;});
+  byId('memory-search').addEventListener('input',renderActiveMemoriesView);byId('memory-save').addEventListener('click',saveMemory);
+  byId('memory-view-grid').addEventListener('click',()=>setMemoriesView('grid'));byId('memory-view-timeline').addEventListener('click',()=>setMemoriesView('timeline'));
   setupMemoryImport();
   byId('speaker-review-close').addEventListener('click',()=>byId('speaker-review-dialog').close());byId('speaker-review-save').addEventListener('click',saveSpeakerReview);
   byId('speaker-avatar-close').addEventListener('click',()=>byId('speaker-avatar-dialog').close());byId('speaker-avatar-upload').addEventListener('change',(event)=>uploadSpeakerImage(event.currentTarget,'avatar'));byId('speaker-photo-upload').addEventListener('change',(event)=>uploadSpeakerImage(event.currentTarget,'photo'));byId('speaker-photo-consent').addEventListener('change',()=>{const speaker=state.speakers.find((item)=>item.speaker_id===state.activeSpeakerId);byId('speaker-avatar-generate').disabled=!(speaker?.source_photo_ready&&byId('speaker-photo-consent').checked);});byId('speaker-avatar-generate').addEventListener('click',startAvatarGeneration);
@@ -1374,10 +1568,16 @@ function bindEvents(){
   byId('login-form').addEventListener('submit', submitLogin);
   byId('login-dialog').addEventListener('cancel', (event) => event.preventDefault());
   document.addEventListener('here-i-am:auth-required', showLoginDialog);
+  byId('return-nudge-dismiss').addEventListener('click', () => {
+    const until = new Date(); until.setHours(23, 59, 59, 999);
+    localStorage.setItem(RETURN_NUDGE_DISMISSED_KEY, until.toISOString());
+    byId('return-nudge').hidden = true;
+    activity('return_nudge_dismissed', {});
+  });
 }
 
 async function bootApp(){
-  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers(),loadBuildVersion()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
+  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers(),loadBuildVersion(),refreshTalkBanners()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
   catch(error){activity('app_load_failed',{error_name:error.name||'Error'});setPresence(`Needs attention: ${error.message}`,'resting');}
 }
 

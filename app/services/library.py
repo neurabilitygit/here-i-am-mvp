@@ -5,7 +5,7 @@ import json
 import shutil
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -17,6 +17,21 @@ from services.storage import atomic_write_text, load_json, safe_session_dir, ses
 def _modified_at(paths: list[Path]):
     values = [path.stat().st_mtime for path in paths if path.exists()]
     return datetime.fromtimestamp(max(values), tz=timezone.utc) if values else None
+
+
+def _recorded_at(session_path: Path) -> str:
+    name = session_path.name
+    return name[:10] if len(name) >= 10 and name[4] == '-' and name[7] == '-' else ''
+
+
+def _is_still_sealed(state: dict) -> bool:
+    unlock_at = state.get('unlock_at')
+    if not unlock_at:
+        return False
+    try:
+        return datetime.fromisoformat(unlock_at) > datetime.now(timezone.utc)
+    except ValueError:
+        return False
 
 
 def session_summary(session_path: Path) -> SessionSummary:
@@ -36,14 +51,57 @@ def session_summary(session_path: Path) -> SessionSummary:
         recording_mode=state.get('recording_mode', 'solo'),
         speaker_review_status=state.get('speaker_review_status', 'not_required'),
         speaker_count=int(state.get('speaker_count', 1)),
+        recorded_at=_recorded_at(session_path),
+        time_period=metadata.get('time_period') or '',
+        emotional_tone=metadata.get('emotional_tone') or [],
+        topics=metadata.get('topics') or [],
+        notable_events=metadata.get('notable_events') or [],
+        sealed=_is_still_sealed(state),
+        unlock_at=state.get('unlock_at'),
     )
 
 
-def list_sessions() -> list[SessionSummary]:
+def _all_session_summaries() -> list[SessionSummary]:
     root = Path(settings.sessions_dir)
     if not root.exists():
         return []
     return [session_summary(path) for path in sorted(root.iterdir(), reverse=True) if path.is_dir()]
+
+
+def list_sessions() -> list[SessionSummary]:
+    return [summary for summary in _all_session_summaries() if not summary.sealed]
+
+
+def sealed_sessions() -> list[SessionSummary]:
+    return [summary for summary in _all_session_summaries() if summary.sealed]
+
+
+def on_this_day_sessions(today: date | None = None) -> list[SessionSummary]:
+    reference = today or date.today()
+    month_day = (reference.month, reference.day)
+    matches = []
+    for summary in list_sessions():
+        if not summary.recorded_at or summary.sealed:
+            continue
+        try:
+            recorded = date.fromisoformat(summary.recorded_at)
+        except ValueError:
+            continue
+        if recorded.year != reference.year and (recorded.month, recorded.day) == month_day:
+            matches.append(summary)
+    return matches
+
+
+def days_since_last_recording() -> int | None:
+    sessions = [summary for summary in list_sessions() if summary.recorded_at]
+    if not sessions:
+        return None
+    most_recent = sessions[0]
+    try:
+        recorded = date.fromisoformat(most_recent.recorded_at)
+    except ValueError:
+        return None
+    return (date.today() - recorded).days
 
 
 def get_session(session_id: str, include_transcript: bool = True) -> SessionDetail:
@@ -51,6 +109,8 @@ def get_session(session_id: str, include_transcript: bool = True) -> SessionDeta
     if not path.exists():
         raise FileNotFoundError('Session does not exist')
     summary = session_summary(path)
+    if summary.sealed:
+        return SessionDetail(**summary.model_dump(), state={}, metadata={}, transcript=None)
     paths = session_paths(path)
     return SessionDetail(
         **summary.model_dump(),
