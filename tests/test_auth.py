@@ -47,6 +47,7 @@ def test_public_allowlist_reachable_without_cookie(tmp_path, monkeypatch):
     assert client.get('/').status_code == 200
     assert client.get('/static/styles.css').status_code == 200
     assert client.get('/api/health').status_code == 200
+    assert client.get('/api/ready').status_code in (200, 503)
     status = client.get('/api/auth/status')
     assert status.status_code == 200
     assert status.json() == {'authenticated': False, 'required': True}

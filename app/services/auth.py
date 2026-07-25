@@ -31,6 +31,10 @@ _failed_attempts: list[float] = []
 _PUBLIC_EXACT = {
     ('GET', '/'),
     ('GET', '/api/health'),
+    # scripts/start.sh polls this during every deploy/restart with no
+    # session cookie; gating it would make the launcher's own readiness
+    # wait time out and fail every deploy.
+    ('GET', '/api/ready'),
     ('POST', '/api/auth/login'),
     ('GET', '/api/auth/status'),
     ('POST', '/api/auth/logout'),
