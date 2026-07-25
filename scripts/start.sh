@@ -8,6 +8,17 @@ RUN_DIR="$DATA_DIR/run"
 VOICE_ENV="${HERE_I_AM_VOICE_ENV:-/Users/ericbass/Library/Application Support/Here-I-Am/voice-mlx-runtime}"
 SECRET_DIR="${HERE_I_AM_SECRET_DIR:-/Users/ericbass/Library/Application Support/Here-I-Am/secrets}"
 
+# Docker Compose reads .env automatically for its own substitution, but this
+# script's own shell (and the native bridges it launches, e.g. the voice
+# bridge) never saw it. Source it here so QWEN_TTS_* and similar host-side
+# tuning variables actually reach the native processes that read them.
+if [[ -f "$SOURCE_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SOURCE_DIR/.env"
+  set +a
+fi
+
 wait_for_url() {
   local url="$1" timeout="$2" label="$3" elapsed=0
   printf 'Waiting for %s' "$label"
