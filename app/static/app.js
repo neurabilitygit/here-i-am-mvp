@@ -187,6 +187,46 @@ function setPresence(label, avatarState = 'resting') {
   document.body.dataset.avatarState = avatarState;
 }
 
+function notifyIfAuthRequired(response) {
+  if (response.status === 401) document.dispatchEvent(new CustomEvent('here-i-am:auth-required'));
+}
+
+function showLoginDialog() {
+  const dialog = byId('login-dialog');
+  if (dialog.open) return;
+  const status = byId('login-status');
+  const input = byId('login-passphrase');
+  status.textContent = '';
+  input.value = '';
+  dialog.showModal();
+  input.focus();
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const status = byId('login-status');
+  const input = byId('login-passphrase');
+  status.textContent = 'Signing in…';
+  try {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({passphrase: input.value}),
+    });
+    if (response.status === 429) { status.textContent = 'Too many attempts. Try again later.'; return; }
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      status.textContent = data.detail || 'Incorrect passphrase.';
+      return;
+    }
+    input.value = '';
+    status.textContent = '';
+    byId('login-dialog').close();
+    await bootApp();
+  } catch (error) {
+    status.textContent = 'Could not reach Here I Am. Try again.';
+  }
+}
+
 function showScene(name, reason = 'programmatic') {
   const previous = document.body.dataset.scene || '';
   document.body.dataset.scene = name;
@@ -456,6 +496,7 @@ async function askQuestion(question) {
       body: JSON.stringify({question:value}), signal: controller.signal,
     });
     if (generation !== state.chatGeneration) return;
+    notifyIfAuthRequired(response);
     if (!response.ok) throw new Error((await response.json()).detail || 'The answer could not be started');
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -686,6 +727,7 @@ async function startVoicePrerender() {
   activity('voice_prepare_started', {request_id: requestId, answer_chars: text.length, automatic: true});
   try {
     const response = await fetch('/api/voice/speak', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,speed:1,request_id:requestId}),signal:controller.signal});
+    notifyIfAuthRequired(response);
     if (!response.ok) throw new Error('Background voice preparation did not complete');
     const blob = await response.blob();
     if (state.voicePrerenderText === text && state.voicePrerenderGeneration === generation && state.chatGeneration === generation && state.lastAnswer === text && blob.size) {
@@ -797,6 +839,7 @@ async function speakAnswer() {
   }, 20000);
   try {
     const response = await fetch('/api/voice/speak', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:answerText, speed:1, request_id:requestId}), signal:state.voiceAbort.signal});
+    notifyIfAuthRequired(response);
     if (response.status === 409) throw new Error('A voice file is already being prepared. Please wait for it to finish.');
     if (!response.ok) throw new Error((await response.json()).detail || 'Voice generation failed');
     if (state.voiceRequestId !== requestId || state.chatGeneration !== answerGeneration || state.lastAnswer !== answerText) {
@@ -861,12 +904,25 @@ function stopSpeaking() {
   setPresence(wasActive ? 'Voice stopped. The written answer is still ready.' : 'Ready to talk', 'resting');
 }
 
+function sizeCanvasForDPR(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const width = rect.width || canvas.clientWidth || canvas.width;
+  const height = rect.height || canvas.clientHeight || canvas.height;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return {width, height};
+}
+
 function drawIdleWave() {
   const canvas = byId('record-wave');
+  const {width, height} = sizeCanvasForDPR(canvas);
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.clearRect(0,0,width,height);
   ctx.strokeStyle = 'rgba(169,139,255,.6)'; ctx.lineWidth = 4; ctx.beginPath();
-  for (let x=0;x<canvas.width;x+=8) { const y=canvas.height/2 + Math.sin(x/38)*8; x ? ctx.lineTo(x,y) : ctx.moveTo(x,y); }
+  for (let x=0;x<width;x+=8) { const y=height/2 + Math.sin(x/38)*8; x ? ctx.lineTo(x,y) : ctx.moveTo(x,y); }
   ctx.stroke();
 }
 
@@ -877,12 +933,14 @@ function startRecordVisualizer(stream) {
   const source = context.createMediaStreamSource(stream);
   const analyser = context.createAnalyser(); analyser.fftSize = 256; source.connect(analyser);
   const data = new Uint8Array(analyser.frequencyBinCount);
-  const canvas = byId('record-wave'); const ctx = canvas.getContext('2d');
+  const canvas = byId('record-wave');
+  const {width, height} = sizeCanvasForDPR(canvas);
+  const ctx = canvas.getContext('2d');
   const draw = () => {
     if (!state.mediaRecorder || state.mediaRecorder.state === 'inactive') { context.close(); return; }
     state.recordAnimation = requestAnimationFrame(draw); analyser.getByteTimeDomainData(data);
-    ctx.clearRect(0,0,canvas.width,canvas.height); ctx.strokeStyle='#6ee7df'; ctx.lineWidth=4; ctx.beginPath();
-    data.forEach((value,index) => { const x=index/(data.length-1)*canvas.width; const y=value/255*canvas.height; index?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+    ctx.clearRect(0,0,width,height); ctx.strokeStyle='#6ee7df'; ctx.lineWidth=4; ctx.beginPath();
+    data.forEach((value,index) => { const x=index/(data.length-1)*width; const y=value/255*height; index?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
   }; draw();
 }
 
@@ -1313,12 +1371,22 @@ function bindEvents(){
   byId('voice-setup-button').addEventListener('click',openVoiceSetup);byId('voice-create').addEventListener('click',createVoice);byId('voice-cache-clear').addEventListener('click',clearVoiceCache);byId('voice-revoke-button').addEventListener('click',revokeVoice);
   byId('reconcile-run').addEventListener('click',runReconciliation);byId('backup-create').addEventListener('click',createBackup);byId('warm-model').addEventListener('click',async()=>{byId('technical-status').textContent='Warming local AI…';try{await api('/api/providers/local/warm',{method:'POST'});byId('technical-status').textContent='Local AI is warm and ready.';}catch(error){byId('technical-status').textContent=error.message;}});
   byId('onboarding-start').addEventListener('click',async()=>{state.preferences.onboarding_complete=true;await api('/api/experience',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:state.preferences})});byId('onboarding-dialog').close();});
+  byId('login-form').addEventListener('submit', submitLogin);
+  byId('login-dialog').addEventListener('cancel', (event) => event.preventDefault());
+  document.addEventListener('here-i-am:auth-required', showLoginDialog);
+}
+
+async function bootApp(){
+  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers(),loadBuildVersion()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
+  catch(error){activity('app_load_failed',{error_name:error.name||'Error'});setPresence(`Needs attention: ${error.message}`,'resting');}
 }
 
 async function initialize(){
   bindEvents();drawIdleWave();setupSpeechQuestion();
-  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers(),loadBuildVersion()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
-  catch(error){activity('app_load_failed',{error_name:error.name||'Error'});setPresence(`Needs attention: ${error.message}`,'resting');}
+  let authOk = true;
+  try{const status=await(await fetch('/api/auth/status')).json();authOk=!status.required||Boolean(status.authenticated);}catch(error){authOk=true;}
+  if(!authOk){showLoginDialog();return;}
+  await bootApp();
 }
 
 initialize();

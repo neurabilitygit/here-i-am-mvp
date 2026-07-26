@@ -62,6 +62,15 @@ class GenericStatus(BaseModel):
     detail: str
 
 
+class AuthLoginRequest(BaseModel):
+    passphrase: str = Field(min_length=1, max_length=512)
+
+
+class AuthStatus(BaseModel):
+    authenticated: bool
+    required: bool
+
+
 class ClientActivityEvent(BaseModel):
     event: str = Field(min_length=1, max_length=80, pattern=r'^[a-z][a-z0-9_]*$')
     page_id: str = Field(min_length=1, max_length=80, pattern=r'^[A-Za-z0-9_-]+$')

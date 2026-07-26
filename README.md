@@ -85,3 +85,7 @@ The main app runs without voice synthesis. To enable private, reference-conditio
 The first run creates an isolated native environment and downloads the configured Qwen3-TTS model. The voice bridge divides an answer into natural speech segments, generates up to four segments together against one cached reference, and stitches them into a single WAV for Safari. Completed answers are cached, active work is cancellable, and a 110-second watchdog prevents an abandoned request from holding the voice indefinitely. In Settings, the recorded speaker must confirm voice rights and select a reference recording before synthesis is enabled. “Prepare voice while I read” can render the WAV in the background as soon as a written answer appears. Original recordings are never edited.
 
 See [Immersive product plan](docs/IMMERSIVE_PRODUCT_PLAN.md) and [voice/cloud consent](docs/VOICE_AND_CLOUD_CONSENT.md).
+
+## Mobile access
+
+Here I Am now requires logging in with a shared passphrase (`./scripts/set_passphrase.py` to set it) and can be reached from a phone over a private Tailscale mesh network — never a LAN binding or a public tunnel. See [Operations: Remote access via Tailscale](docs/OPERATIONS.md#remote-access-via-tailscale) for setup.

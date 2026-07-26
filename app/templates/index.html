@@ -284,6 +284,16 @@
     </div>
   </dialog>
 
+  <dialog id="login-dialog" class="sheet-dialog compact-sheet">
+    <form id="login-form" class="sheet">
+      <header><div><p class="scene-kicker">Welcome back</p><h2>Sign in</h2></div></header>
+      <p class="setting-note">Enter the passphrase to continue.</p>
+      <label class="floating-field" for="login-passphrase"><span>Passphrase</span><input id="login-passphrase" type="password" autocomplete="current-password" required /></label>
+      <button id="login-submit" class="primary-wide" type="submit">Sign in</button>
+      <p id="login-status" role="status" aria-live="polite"></p>
+    </form>
+  </dialog>
+
   <dialog id="onboarding-dialog" class="onboarding-dialog">
     <div class="onboarding-card">
       <div class="welcome-orb" aria-hidden="true">✦</div>

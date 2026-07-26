@@ -8,6 +8,17 @@ RUN_DIR="$DATA_DIR/run"
 VOICE_ENV="${HERE_I_AM_VOICE_ENV:-/Users/ericbass/Library/Application Support/Here-I-Am/voice-mlx-runtime}"
 SECRET_DIR="${HERE_I_AM_SECRET_DIR:-/Users/ericbass/Library/Application Support/Here-I-Am/secrets}"
 
+# Docker Compose reads .env automatically for its own substitution, but this
+# script's own shell (and the native bridges it launches, e.g. the voice
+# bridge) never saw it. Source it here so QWEN_TTS_* and similar host-side
+# tuning variables actually reach the native processes that read them.
+if [[ -f "$SOURCE_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SOURCE_DIR/.env"
+  set +a
+fi
+
 wait_for_url() {
   local url="$1" timeout="$2" label="$3" elapsed=0
   printf 'Waiting for %s' "$label"
@@ -29,6 +40,13 @@ if [[ ! -s "$BRIDGE_TOKEN_FILE" ]]; then
 fi
 LOCAL_BRIDGE_TOKEN="$(tr -d '\r\n' <"$BRIDGE_TOKEN_FILE")"
 export LOCAL_BRIDGE_TOKEN
+AUTH_PASSPHRASE_HASH_FILE_PATH="$SECRET_DIR/auth_passphrase_hash"
+if [[ ! -s "$AUTH_PASSPHRASE_HASH_FILE_PATH" ]]; then
+  echo "No login passphrase is configured. Run './scripts/set_passphrase.py' once, then re-run start.sh." >&2
+  exit 1
+fi
+AUTH_PASSPHRASE_HASH_HOST_FILE="$AUTH_PASSPHRASE_HASH_FILE_PATH"
+export AUTH_PASSPHRASE_HASH_HOST_FILE
 HERE_I_AM_DATA_DIR="$DATA_DIR"
 VOICE_HOST_DATA_ROOT="$DATA_DIR"
 HERE_I_AM_VOICE_DATA_ROOT="$DATA_DIR"
