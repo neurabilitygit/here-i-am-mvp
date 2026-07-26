@@ -30,7 +30,7 @@ def _is_still_sealed(state: dict) -> bool:
         return False
     try:
         return datetime.fromisoformat(unlock_at) > datetime.now(timezone.utc)
-    except ValueError:
+    except (TypeError, ValueError):
         return False
 
 
@@ -38,6 +38,8 @@ def session_summary(session_path: Path) -> SessionSummary:
     paths = session_paths(session_path)
     state = load_json(paths['state']) if paths['state'].exists() else {}
     metadata = load_json(paths['metadata']) if paths['metadata'].exists() else {}
+    raw_unlock_at = state.get('unlock_at')
+    safe_unlock_at = raw_unlock_at if isinstance(raw_unlock_at, str) else None
     return SessionSummary(
         session_id=session_path.name,
         title=str(metadata.get('title') or session_path.name),
@@ -57,7 +59,7 @@ def session_summary(session_path: Path) -> SessionSummary:
         topics=metadata.get('topics') or [],
         notable_events=metadata.get('notable_events') or [],
         sealed=_is_still_sealed(state),
-        unlock_at=state.get('unlock_at'),
+        unlock_at=safe_unlock_at,
     )
 
 

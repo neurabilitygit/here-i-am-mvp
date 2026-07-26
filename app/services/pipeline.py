@@ -137,7 +137,7 @@ def active_index_versions() -> dict[str, str]:
             try:
                 if datetime.fromisoformat(unlock_at) > datetime.now(timezone.utc):
                     continue
-            except ValueError:
+            except (TypeError, ValueError):
                 pass  # malformed unlock_at fails open rather than sealing forever
         active[session.name] = str(state.get('active_content_version') or 'legacy')
     return active

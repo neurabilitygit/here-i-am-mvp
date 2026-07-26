@@ -979,7 +979,7 @@ async function startRecording() {
     state.recordStartedAt=Date.now();
     state.recordTimer=setInterval(updateRecordTime,500); updateRecordTime(); startRecordVisualizer(state.mediaStream);
     byId('record-start').classList.add('active'); byId('record-start').querySelector('span:last-child').textContent='Recording';
-    byId('record-start').disabled=true; byId('record-pause').disabled=false; byId('record-stop').disabled=false;
+    byId('record-start').disabled=true; byId('record-pause').disabled=false; byId('record-stop').disabled=false; byId('record-retry').hidden=true;
     byId('recording-status').textContent='I am listening. Take your time.'; setPresence('Listening to your memory…','listening');
   } catch(error){byId('recording-status').textContent=error.message;}
 }
@@ -1025,9 +1025,17 @@ async function uploadRecording({unexpected=false}={}){
     response = await api('/api/recordings/upload',{method:'POST',body:form});
   }catch(error){
     // Only a failure of the upload itself means the memory was not saved.
-    console.error('[recording] save failed',error);activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});byId('recording-status').textContent=`That memory was not saved. ${error.message}`;resetRecorder();
+    // The captured audio must never be discarded here -- keep state.recordedChunks
+    // intact so "Try saving again" can retry the exact same upload without
+    // re-recording. Starting a fresh recording will naturally overwrite it.
+    console.error('[recording] save failed',error);
+    activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});
+    byId('recording-status').textContent=`Your recording is still here on this device, but saving it failed: ${error.message}`;
+    resetRecorderAfterFailedUpload();
+    byId('record-retry').hidden=false;
     return;
   }
+  byId('record-retry').hidden=true;
 
   // From here on, the recording is already durably saved on the server —
   // any failure below is a UI-refresh hiccup, not a lost memory, and must
@@ -1057,6 +1065,23 @@ function resetRecorder(){
   state.recordStopRequested=false;state.recordFinalizing=false;state.recordError='';
   byId('record-start').disabled=false;byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
   byId('record-pause').disabled=true;byId('record-stop').disabled=true;byId('record-pause').textContent='Pause';byId('record-time').textContent='00:00';drawIdleWave();setPresence('Ready to talk','resting');
+}
+
+function resetRecorderAfterFailedUpload(){
+  clearInterval(state.recordTimer); cancelAnimationFrame(state.recordAnimation); releaseRecordingStream(); state.mediaRecorder=null;state.mediaStream=null;
+  state.recordStopRequested=false;state.recordFinalizing=false;
+  byId('record-start').disabled=false;byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
+  byId('record-pause').disabled=true;byId('record-stop').disabled=true;byId('record-pause').textContent='Pause';byId('record-time').textContent='00:00';drawIdleWave();setPresence('Ready to talk','resting');
+  // Deliberately does not clear state.recordedChunks/state.recordError: a
+  // failed upload must never discard the captured audio. retrySavingRecording()
+  // reuses it; starting a fresh recording overwrites it naturally.
+}
+
+async function retrySavingRecording(){
+  if(!state.recordedChunks.length){byId('recording-status').textContent='There is nothing captured to retry — please record again.';byId('record-retry').hidden=true;return;}
+  byId('record-retry').hidden=true;
+  byId('recording-status').textContent='Trying to save your memory again…';
+  await uploadRecording({unexpected:false});
 }
 
 async function waitForJob(job, phase){
@@ -1464,7 +1489,13 @@ async function refreshPromptOfTheDay(){
 
 async function refreshLibrary(){
   try{state.sessions=await api('/api/sessions');renderActiveMemoriesView();renderSpeakerReviewQueue();renderToneReflection();byId('library-status').textContent=state.sessions.length?'Choose any memory to read or change its words.':'Your first memory will appear here.';}
-  catch(error){byId('library-status').textContent=error.message;}
+  catch(error){
+    // Raw browser network errors (e.g. WebKit's "Load failed") do not mean
+    // anything was lost -- they mean this specific list request could not
+    // complete. Say that plainly instead of surfacing the raw error text.
+    console.error('[library] refresh failed',error);
+    byId('library-status').textContent='Your memories are safe, but this list could not load right now. Reopen Memories to try again.';
+  }
 }
 
 async function openQuiz(){
@@ -1570,6 +1601,7 @@ function bindEvents(){
   byId('voice-question').addEventListener('click',()=>state.speechRecognition?.start());byId('speak-answer').addEventListener('click',speakAnswer);byId('stop-speaking').addEventListener('click',stopSpeaking);byId('compare-answer').addEventListener('click',compareAnswers);byId('feedback-up').addEventListener('click',()=>sendFeedback('up'));byId('clear-answer').addEventListener('click',clearAnswer);
   byId('record-start').addEventListener('click',startRecording);byId('record-pause').addEventListener('click',pauseRecording);byId('record-stop').addEventListener('click',stopRecording);
   byId('record-seal').addEventListener('change',(event)=>{byId('record-seal-date-field').hidden=!event.currentTarget.checked;});
+  byId('record-retry').addEventListener('click',retrySavingRecording);
   byId('memory-search').addEventListener('input',renderActiveMemoriesView);byId('memory-save').addEventListener('click',saveMemory);
   byId('memory-view-grid').addEventListener('click',()=>setMemoriesView('grid'));byId('memory-view-timeline').addEventListener('click',()=>setMemoriesView('timeline'));
   setupMemoryImport();

@@ -282,3 +282,9 @@ def test_sample_quiz_prompt_only_uses_active_sessions_and_strips_evidence_prefix
         assert 'Memory subject evidence' not in result.quote
         seen_sessions.add(result.session_id)
     assert active.name in seen_sessions
+
+
+def test_active_index_versions_treats_non_string_unlock_at_as_unlocked():
+    _, session = create_session_dir('Non-string unlock manifest test')
+    update_processing_state(session, embedded=True, active_content_version='v1', unlock_at=12345)
+    assert active_index_versions().get(session.name) == 'v1'
