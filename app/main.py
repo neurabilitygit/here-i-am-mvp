@@ -29,7 +29,7 @@ from models.schemas import AnswerFeedback, AuthLoginRequest, AuthStatus, AvatarG
 from services.prompts import prompt_of_the_day
 from services.auth import SESSION_COOKIE_NAME, is_locked_out, issue_token, passphrase_configured, register_failure, register_success, requires_auth, revoke_token, validate_token, verify_passphrase
 from services.jobs import JobConflictError, job_manager
-from services.library import build_session_export, create_structured_backup, days_since_last_recording, get_session, list_sessions, on_this_day_sessions, reconciliation_report, sealed_sessions
+from services.library import build_session_export, create_structured_backup, days_since_last_recording, get_session, is_sealed, list_sessions, on_this_day_sessions, reconciliation_report, sealed_sessions
 from services.ollama_client import ollama_client
 from services.fidelity import build_speaker_fingerprint, load_speaker_fingerprint, save_answer_feedback
 from services.pipeline import analyze_unprocessed, answer_question, benchmark_question, memory_queue_status, prepare_answer, process_memory_batch, reindex_to_migration_collection, related_sessions, sample_quiz_prompt, stream_prepared_answer, transcribe_unprocessed
@@ -38,7 +38,7 @@ from services.providers import active_provider, provider_status, public_provider
 from services.storage import archive_session, create_session_dir, ensure_directories, list_session_dirs, revise_transcript, safe_session_dir, seal_until, session_lock, session_paths, update_processing_state
 from services.speakers import SpeakerWorkflowError, apply_speaker_assignments, create_speaker, list_speakers, speaker_review, speaker_sample
 from services.avatars import AvatarWorkflowError, active_avatar_path, generate_avatar, store_speaker_image, validate_avatar_generation
-from services.voice import LOCAL_BRIDGE_HEADERS, cancel_synthesis_stream, list_voice_candidates, load_voice_status, prepare_voice_reference, revoke_voice, synthesize
+from services.voice import LOCAL_BRIDGE_HEADERS, cancel_synthesis_stream, list_voice_candidates, load_voice_status, prepare_voice_reference, public_voice_error, revoke_voice, synthesize
 from services.activity import recent_activity, record_activity
 
 @asynccontextmanager
@@ -785,7 +785,8 @@ async def speak(payload: TTSRequest, request: Request):
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except requests.RequestException as exc:
-        raise HTTPException(status_code=503, detail='Voice provider is unavailable') from exc
+        logger.exception('voice synthesis failed')
+        raise HTTPException(status_code=503, detail=public_voice_error(load_voice_status().provider, exc)) from exc
     finally:
         disconnected.cancel()
     return Response(audio, media_type=media_type, headers={'X-Voice-Provider': provider, 'Cache-Control': 'no-store'})
@@ -841,6 +842,8 @@ def session_related(session_id: str):
 @app.put('/api/sessions/{session_id}/transcript')
 def update_transcript(session_id: str, payload: TranscriptUpdate):
     try:
+        if is_sealed(session_id):
+            raise HTTPException(status_code=403, detail='This memory is sealed until its unlock date')
         session = safe_session_dir(session_id)
         with session_lock(session_id):
             revision = revise_transcript(session, payload.transcript, payload.reason)
@@ -877,6 +880,8 @@ def seal_session(session_id: str, payload: SealRequest):
 
 @app.get('/api/sessions/{session_id}/export')
 def export_session(session_id: str):
+    if is_sealed(session_id):
+        raise HTTPException(status_code=403, detail='This memory is sealed until its unlock date')
     try:
         export_path = build_session_export(session_id)
     except (FileNotFoundError, ValueError) as exc:

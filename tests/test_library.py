@@ -5,6 +5,8 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from config import settings
 from models.schemas import SessionSummary
 from services.library import (
@@ -16,7 +18,7 @@ from services.library import (
     sealed_sessions,
     session_summary,
 )
-from services.storage import atomic_write_text, create_session_dir, ensure_directories, save_json, session_paths, update_processing_state
+from services.storage import atomic_write_text, create_session_dir, ensure_directories, save_json, seal_until, session_paths, update_processing_state
 
 
 def test_library_summary_and_read_only_reconciliation():
@@ -151,3 +153,39 @@ def test_session_summary_treats_non_string_unlock_at_as_unsealed():
     summary = session_summary(session)
     assert summary.sealed is False
     assert any(item.session_id == session.name for item in list_sessions())
+
+
+def test_session_summary_redacts_ai_derived_fields_while_sealed():
+    ensure_directories()
+    _, session = create_session_dir('Sealed redaction test')
+    save_json(session_paths(session)['metadata'], {
+        'title': 'A secret about Tanglewood',
+        'topics': ['trumpet', 'summer camp'],
+        'time_period': '1990s',
+        'emotional_tone': ['joyful'],
+        'notable_events': ['first solo'],
+    })
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    update_processing_state(session, unlock_at=future)
+
+    summary = session_summary(session)
+    assert summary.sealed is True
+    assert summary.title == 'Sealed letter'
+    assert summary.topics == []
+    assert summary.notable_events == []
+    assert summary.emotional_tone == []
+    assert summary.time_period == ''
+
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    update_processing_state(session, unlock_at=past)
+    unsealed = session_summary(session)
+    assert unsealed.sealed is False
+    assert unsealed.title == 'A secret about Tanglewood'
+    assert unsealed.topics == ['trumpet', 'summer camp']
+
+
+def test_seal_until_rejects_a_nonexistent_session():
+    ensure_directories()
+    missing = Path(settings.sessions_dir) / 'does-not-exist'
+    with pytest.raises(FileNotFoundError):
+        seal_until(missing, datetime.now(timezone.utc) + timedelta(days=1))

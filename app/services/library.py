@@ -40,9 +40,14 @@ def session_summary(session_path: Path) -> SessionSummary:
     metadata = load_json(paths['metadata']) if paths['metadata'].exists() else {}
     raw_unlock_at = state.get('unlock_at')
     safe_unlock_at = raw_unlock_at if isinstance(raw_unlock_at, str) else None
+    sealed = _is_still_sealed(state)
+    # A still-sealed session's AI-derived content fields must never leak
+    # through the summary/list endpoints -- only session_id/dates/sealed
+    # status are safe to expose. Redact at the source so every caller
+    # (list_sessions, sealed_sessions, get_session's spread) inherits it.
     return SessionSummary(
         session_id=session_path.name,
-        title=str(metadata.get('title') or session_path.name),
+        title='Sealed letter' if sealed else str(metadata.get('title') or session_path.name),
         recorded=paths['audio'].exists(),
         transcribed=paths['transcript'].exists(),
         analyzed=paths['metadata'].exists() and bool(state.get('analyzed', False)),
@@ -54,11 +59,11 @@ def session_summary(session_path: Path) -> SessionSummary:
         speaker_review_status=state.get('speaker_review_status', 'not_required'),
         speaker_count=int(state.get('speaker_count', 1)),
         recorded_at=_recorded_at(session_path),
-        time_period=metadata.get('time_period') or '',
-        emotional_tone=metadata.get('emotional_tone') or [],
-        topics=metadata.get('topics') or [],
-        notable_events=metadata.get('notable_events') or [],
-        sealed=_is_still_sealed(state),
+        time_period='' if sealed else (metadata.get('time_period') or ''),
+        emotional_tone=[] if sealed else (metadata.get('emotional_tone') or []),
+        topics=[] if sealed else (metadata.get('topics') or []),
+        notable_events=[] if sealed else (metadata.get('notable_events') or []),
+        sealed=sealed,
         unlock_at=safe_unlock_at,
     )
 
@@ -104,6 +109,13 @@ def days_since_last_recording() -> int | None:
     except ValueError:
         return None
     return (date.today() - recorded).days
+
+
+def is_sealed(session_id: str) -> bool:
+    path = safe_session_dir(session_id)
+    if not path.exists():
+        return False
+    return session_summary(path).sealed
 
 
 def get_session(session_id: str, include_transcript: bool = True) -> SessionDetail:

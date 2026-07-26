@@ -49,7 +49,7 @@
     <div class="scene-stack">
       <section id="talk-scene" class="scene active" data-scene-panel="talk" aria-labelledby="talk-title">
         <h2 id="talk-title" class="sr-only" tabindex="-1">Talk</h2>
-        <section id="on-this-day" class="memory-queue on-this-day" hidden aria-labelledby="on-this-day-title">
+        <section id="on-this-day" class="memory-queue on-this-day" hidden role="status" aria-live="polite" aria-labelledby="on-this-day-title">
           <div class="queue-orb" aria-hidden="true"><span>✦</span></div>
           <div class="queue-copy">
             <p class="scene-kicker">On this day</p>
@@ -58,7 +58,7 @@
           </div>
           <button id="on-this-day-open" class="primary-wide" type="button">Listen again</button>
         </section>
-        <section id="return-nudge" class="memory-queue return-nudge" hidden aria-labelledby="return-nudge-title">
+        <section id="return-nudge" class="memory-queue return-nudge" hidden role="status" aria-live="polite" aria-labelledby="return-nudge-title">
           <div class="queue-orb" aria-hidden="true"><span>●</span></div>
           <div class="queue-copy">
             <p class="scene-kicker">It's been a while</p>
@@ -156,7 +156,7 @@
           </fieldset>
           <p id="memory-upload-status" class="memory-upload-status" role="status" aria-live="polite">The original stays on this Mac. A conversation analysis copy uses OpenAI only when you start the memory batch.</p>
         </section>
-        <section id="sealed-letters" class="memory-queue sealed-letters" hidden aria-labelledby="sealed-letters-title">
+        <section id="sealed-letters" class="memory-queue sealed-letters" hidden role="status" aria-live="polite" aria-labelledby="sealed-letters-title">
           <div class="queue-orb" aria-hidden="true"><span>✦</span></div>
           <div class="queue-copy">
             <p class="scene-kicker">Letters to the future</p>

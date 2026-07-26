@@ -320,6 +320,8 @@ class VoiceStatus(BaseModel):
     bridge_request_id: str = ''
     cloud_voice_configured: bool = False
     voice_id: str = ''
+    cloud_deletion_pending: bool = False
+    cloud_deletion_error: str = ''
 
 
 class VoicePrepareRequest(BaseModel):

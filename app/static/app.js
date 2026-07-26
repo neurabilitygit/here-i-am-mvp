@@ -194,6 +194,10 @@ function notifyIfAuthRequired(response) {
 function showLoginDialog() {
   const dialog = byId('login-dialog');
   if (dialog.open) return;
+  // A session can expire while any other dialog is open (quiz, memory
+  // detail, voice setup, ...); close whatever's open so the login prompt
+  // doesn't stack on top of stale, pre-expiry state.
+  document.querySelectorAll('dialog[open]').forEach((other) => { if (other !== dialog) other.close(); });
   const status = byId('login-status');
   const input = byId('login-passphrase');
   status.textContent = '';
@@ -953,6 +957,9 @@ function updateRecordTime() {
 async function startRecording() {
   try {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('This browser cannot record audio');
+    // Invalidates any still-pending upload/retry from a prior recording so its
+    // eventual completion can't reset/clobber this new recording's live state.
+    state.recordSession += 1;
     state.mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     const candidates=isSafari?['audio/mp4','audio/webm;codecs=opus','audio/webm']:['audio/webm;codecs=opus','audio/webm','audio/mp4'];
@@ -1015,6 +1022,7 @@ async function finalizeRecording(){
 }
 
 async function uploadRecording({unexpected=false}={}){
+  const recordSession=state.recordSession;
   let response;
   try{
     if(!state.recordedChunks.length)throw new Error(state.recordError||'No sound was captured');
@@ -1030,11 +1038,16 @@ async function uploadRecording({unexpected=false}={}){
     // re-recording. Starting a fresh recording will naturally overwrite it.
     console.error('[recording] save failed',error);
     activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});
+    // A newer recording may have started while this (initial or retry) upload
+    // was in flight -- if so, its UI/media state belongs to that new
+    // recording now, and this stale failure must not touch or reset it.
+    if(state.recordSession!==recordSession)return;
     byId('recording-status').textContent=`Your recording is still here on this device, but saving it failed: ${error.message}`;
     resetRecorderAfterFailedUpload();
     byId('record-retry').hidden=false;
     return;
   }
+  if(state.recordSession!==recordSession)return;
   byId('record-retry').hidden=true;
 
   // From here on, the recording is already durably saved on the server —
@@ -1078,10 +1091,14 @@ function resetRecorderAfterFailedUpload(){
 }
 
 async function retrySavingRecording(){
+  if(state.uploadInFlight)return; // guards against a double-tap firing two concurrent uploads
   if(!state.recordedChunks.length){byId('recording-status').textContent='There is nothing captured to retry — please record again.';byId('record-retry').hidden=true;return;}
+  state.uploadInFlight=true;
   byId('record-retry').hidden=true;
+  byId('record-start').disabled=true;
   byId('recording-status').textContent='Trying to save your memory again…';
-  await uploadRecording({unexpected:false});
+  try{await uploadRecording({unexpected:false});}
+  finally{state.uploadInFlight=false;}
 }
 
 async function waitForJob(job, phase){
@@ -1413,15 +1430,19 @@ function renderToneReflection(){
   });
   const months=[...byMonth.keys()].sort();
   if(!months.length){panel.hidden=true;return;}
-  const width=700,height=200,padding=30;
+  const width=700,height=200,padding=30,topMargin=20;
+  // Scale row spacing to the busiest month so dots for a heavily-recorded
+  // month never run off the top of the fixed-height chart.
+  const maxEntries=Math.max(...months.map((month)=>byMonth.get(month).length));
+  const rowHeight=maxEntries>1?Math.min(16,(height-padding-topMargin)/(maxEntries-1)):16;
   const colWidth=months.length>1?(width-padding*2)/(months.length-1):0;
   const parts=[];
   months.forEach((month,index)=>{
     const x=months.length>1?padding+index*colWidth:width/2;
     byMonth.get(month).forEach((entry,row)=>{
-      const y=height-padding-row*16;
+      const y=height-padding-row*rowHeight;
       const toneText=Array.isArray(entry.tone)?entry.tone.join(', '):String(entry.tone||'');
-      parts.push(`<circle cx="${x.toFixed(1)}" cy="${y}" r="6" fill="${entry.bucket.color}"><title>${escapeXml(entry.title)}: ${escapeXml(toneText)}</title></circle>`);
+      parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="${entry.bucket.color}"><title>${escapeXml(entry.title)}: ${escapeXml(toneText)}</title></circle>`);
     });
     parts.push(`<text x="${x.toFixed(1)}" y="${height-8}" font-size="11" fill="var(--muted)" text-anchor="middle">${escapeXml(month)}</text>`);
   });
@@ -1471,6 +1492,10 @@ async function refreshReturnNudge(showIfEligible){
     const result=await api('/api/sessions/gap');
     const days=result.days_since_last_recording;
     if(days===null||days===undefined||days<RETURN_NUDGE_DAYS){banner.hidden=true;return;}
+    // Re-check dismissal after the fetch: an overlapping call from a rapid
+    // double-navigation could otherwise re-show a banner the user just dismissed.
+    const dismissedNow=localStorage.getItem(RETURN_NUDGE_DISMISSED_KEY);
+    if(dismissedNow&&new Date(dismissedNow)>new Date()){banner.hidden=true;return;}
     byId('return-nudge-title').textContent=`It's been ${days} days since your last recording.`;
     banner.hidden=false;
     activity('return_nudge_shown',{days_since_last_recording:days});
@@ -1500,8 +1525,9 @@ async function refreshLibrary(){
 
 async function openQuiz(){
   const dialog=byId('quiz-dialog');
+  state.activeQuizPrompt=null; // discard any prior round immediately so a reveal mid-fetch can't show stale data
   byId('quiz-title').textContent='';byId('quiz-quote').hidden=true;byId('quiz-quote').textContent='';
-  byId('quiz-reveal').hidden=false;byId('quiz-next').hidden=true;byId('quiz-status').textContent='Finding a memory…';
+  byId('quiz-reveal').hidden=false;byId('quiz-reveal').disabled=true;byId('quiz-next').hidden=true;byId('quiz-status').textContent='Finding a memory…';
   if(!dialog.open)dialog.showModal();
   try{
     const result=await api('/api/quiz/prompt');
@@ -1509,6 +1535,7 @@ async function openQuiz(){
     state.activeQuizPrompt=result;
     byId('quiz-title').textContent=`Do you remember what you said about ${result.topic_hint}?`;
     byId('quiz-status').textContent='';
+    byId('quiz-reveal').disabled=false;
     activity('quiz_shown',{session_id:result.session_id});
   }catch(error){byId('quiz-status').textContent=error.message;byId('quiz-reveal').hidden=true;}
 }
@@ -1520,7 +1547,8 @@ function revealQuiz(){
   activity('quiz_revealed',{session_id:state.activeQuizPrompt.session_id});
 }
 
-function renderRelatedMemories(sources){
+function renderRelatedMemories(sessionId,sources){
+  if(state.activeSessionId!==sessionId)return; // a different memory is open now; this response is stale
   const section=byId('related-memories');
   if(!sources||!sources.length){section.hidden=true;return;}
   const links=sources.map((source)=>{
@@ -1536,7 +1564,7 @@ function renderRelatedMemories(sources){
 
 async function openMemory(sessionId){
   try{const session=await api(`/api/sessions/${encodeURIComponent(sessionId)}`);state.activeSessionId=sessionId;const conversation=session.recording_mode==='conversation';byId('memory-dialog-title').textContent=session.title;byId('memory-meta').textContent=`${formatMemoryDate(sessionId)} · ${conversation?'Voice-labeled conversation · ':''}${session.embedded?'Ready for questions':'Waiting for the local batch'}`;byId('memory-transcript').value=session.transcript||'';byId('memory-transcript').disabled=!session.transcript||conversation;byId('memory-save').disabled=!session.transcript||conversation;byId('memory-export').href=`/api/sessions/${encodeURIComponent(sessionId)}/export`;byId('memory-dialog-status').textContent=conversation?'The labels preserve which words belong to the memory subject. Take a copy to review the full conversation.':session.transcript?'Every save keeps the earlier version safe.':'The words will appear after the local batch.';byId('related-memories').hidden=true;byId('memory-dialog').showModal();
-  api(`/api/sessions/${encodeURIComponent(sessionId)}/related`).then(renderRelatedMemories).catch(()=>{});}
+  api(`/api/sessions/${encodeURIComponent(sessionId)}/related`).then((sources)=>renderRelatedMemories(sessionId,sources)).catch(()=>{});}
   catch(error){byId('library-status').textContent=error.message;}
 }
 

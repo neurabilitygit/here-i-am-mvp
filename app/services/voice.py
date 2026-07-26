@@ -218,6 +218,28 @@ def revoke_voice(delete_reference: bool = True) -> VoiceStatus:
     return load_voice_status()
 
 
+def public_voice_error(provider: str, exc: Exception) -> str:
+    if provider == 'elevenlabs' and isinstance(exc, requests.HTTPError) and exc.response is not None:
+        status_code = exc.response.status_code
+        try:
+            body = exc.response.json()
+        except ValueError:
+            body = {}
+        reason = str((body.get('detail') or {}).get('status', '')) if isinstance(body.get('detail'), dict) else ''
+        if reason == 'quota_exceeded':
+            return 'The ElevenLabs account has run out of character quota for this billing period.'
+        if status_code == 401 or reason == 'invalid_api_key':
+            return 'The ElevenLabs voice could not authenticate. The API key may be revoked or invalid.'
+        if status_code == 429:
+            return 'ElevenLabs is rate-limiting requests right now. Wait a moment and try again.'
+        if status_code in (402, 403):
+            return 'The ElevenLabs account cannot complete this request. Check the account plan and quota.'
+        return 'The ElevenLabs voice service returned an error.'
+    if isinstance(exc, requests.Timeout):
+        return 'The voice provider took too long to respond.'
+    return 'Voice provider is unavailable'
+
+
 def synthesize(text: str, speed: float = 1.0, request_id: str = '') -> tuple[bytes, str, str]:
     status = load_voice_status()
     if not status.enabled or not status.consented:

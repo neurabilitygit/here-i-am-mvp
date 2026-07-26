@@ -305,3 +305,29 @@ def test_quiz_prompt_endpoint_returns_null_when_no_eligible_sessions(monkeypatch
     response = client.get('/api/quiz/prompt')
     assert response.status_code == 200
     assert response.json() is None
+
+
+def test_sealed_session_blocks_transcript_edit_and_export():
+    _, session = create_session_dir('Sealed export block test')
+    atomic_write_text(session_paths(session)['transcript'], 'A secret memory.')
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    seal = client.post(f'/api/sessions/{session.name}/seal', json={'unlock_at': future})
+    assert seal.status_code == 200
+
+    blocked_edit = client.put(f'/api/sessions/{session.name}/transcript', json={'transcript': 'tampered'})
+    assert blocked_edit.status_code == 403
+
+    blocked_export = client.get(f'/api/sessions/{session.name}/export')
+    assert blocked_export.status_code == 403
+
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    update_processing_state(session, unlock_at=past)
+    allowed_export = client.get(f'/api/sessions/{session.name}/export')
+    assert allowed_export.status_code == 200
+
+
+def test_seal_endpoint_rejects_a_nonexistent_session():
+    response = client.post('/api/sessions/does-not-exist/seal', json={
+        'unlock_at': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+    })
+    assert response.status_code == 404

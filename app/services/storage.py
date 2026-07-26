@@ -94,7 +94,10 @@ def update_processing_state(session_path: Path, **updates: Any) -> None:
 
 
 def seal_until(session_path: Path, unlock_at: datetime) -> None:
-    update_processing_state(session_path, unlock_at=unlock_at.isoformat())
+    if not session_path.exists():
+        raise FileNotFoundError('Session does not exist')
+    with session_lock(session_path.name):
+        update_processing_state(session_path, unlock_at=unlock_at.isoformat())
 
 
 def session_paths(session_path: Path) -> dict[str, Path]:
