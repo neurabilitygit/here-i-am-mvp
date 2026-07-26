@@ -1015,27 +1015,41 @@ async function finalizeRecording(){
 }
 
 async function uploadRecording({unexpected=false}={}){
+  let response;
   try{
     if(!state.recordedChunks.length)throw new Error(state.recordError||'No sound was captured');
     const type=state.recordedChunks[0].type||state.mediaRecorder?.mimeType||'audio/webm'; const form=new FormData();
     form.append('file',new Blob(state.recordedChunks,{type}),type.includes('mp4')?'memory.m4a':'memory.webm');
     const title=byId('record-title').value.trim(); if(title)form.append('title',title);
     form.append('recording_mode',document.querySelector('input[name="record-mode"]:checked')?.value||'solo');
-    const response = await api('/api/recordings/upload',{method:'POST',body:form});
-    const sceneAtCompletion = document.body.dataset.scene || '';
-    activity('recording_upload_completed', {unexpected, session_id: response.session_id, scene_at_completion: sceneAtCompletion});
-    if(byId('record-seal').checked&&byId('record-seal-date').value){
-      const dateValue=byId('record-seal-date').value;
-      try{
-        await api(`/api/sessions/${encodeURIComponent(response.session_id)}/seal`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({unlock_at:new Date(`${dateValue}T00:00:00`).toISOString()})});
-        activity('memory_sealed',{unlock_year_month:dateValue.slice(0,7)});
-      }catch(error){/* the memory itself is still saved even if sealing fails */}
-    }
-    byId('record-seal').checked=false;byId('record-seal-date-field').hidden=true;byId('record-seal-date').value='';
-    resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value='';
-    if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed');
+    response = await api('/api/recordings/upload',{method:'POST',body:form});
+  }catch(error){
+    // Only a failure of the upload itself means the memory was not saved.
+    console.error('[recording] save failed',error);activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});byId('recording-status').textContent=`That memory was not saved. ${error.message}`;resetRecorder();
+    return;
+  }
+
+  // From here on, the recording is already durably saved on the server —
+  // any failure below is a UI-refresh hiccup, not a lost memory, and must
+  // not be reported as "not saved".
+  const sceneAtCompletion = document.body.dataset.scene || '';
+  activity('recording_upload_completed', {unexpected, session_id: response.session_id, scene_at_completion: sceneAtCompletion});
+  if(byId('record-seal').checked&&byId('record-seal-date').value){
+    const dateValue=byId('record-seal-date').value;
+    try{
+      await api(`/api/sessions/${encodeURIComponent(response.session_id)}/seal`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({unlock_at:new Date(`${dateValue}T00:00:00`).toISOString()})});
+      activity('memory_sealed',{unlock_year_month:dateValue.slice(0,7)});
+    }catch(error){/* the memory itself is still saved even if sealing fails */}
+  }
+  byId('record-seal').checked=false;byId('record-seal-date-field').hidden=true;byId('record-seal-date').value='';
+  resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value='';
+  if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed');
+  try{
     await Promise.all([refreshLibrary(),refreshMemoryQueue()]);
-  }catch(error){console.error('[recording] save failed',error);activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});byId('recording-status').textContent=`That memory was not saved. ${error.message}`;resetRecorder();}
+  }catch(error){
+    console.error('[recording] post-save refresh failed',error);
+    byId('library-status').textContent='Saved! Refreshing the list hit a snag — reopen Memories to see it.';
+  }
 }
 
 function resetRecorder(){
