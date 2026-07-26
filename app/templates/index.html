@@ -3,69 +3,307 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#101329" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23846cf6'/%3E%3Cpath d='M22 16v32M42 16v32M22 32h20' stroke='white' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E" />
   <title>Here I Am</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
-<body>
-  <main class="container">
-    <h1>Here I Am</h1>
-    <p class="subhead">A local autobiography capture, analysis, and RAG system</p>
+<body data-scene="talk" data-avatar-state="resting">
+  <a class="skip-link" href="#scene-content">Skip to the current activity</a>
+  <div class="atmosphere" aria-hidden="true">
+    <span class="aurora aurora-one"></span><span class="aurora aurora-two"></span>
+    <span class="memory-light light-1"></span><span class="memory-light light-2"></span>
+    <span class="memory-light light-3"></span><span class="memory-light light-4"></span>
+    <span class="memory-light light-5"></span><span class="memory-light light-6"></span>
+  </div>
 
-    <section class="panel">
-      <h2>1. Local LLM Control</h2>
-      <div class="row">
-        <button id="ollama-start" class="green">Start LLM (disabled)</button>
-        <button id="ollama-stop" class="red">Shut Down LLM (disabled)</button>
-        <button id="ollama-refresh">Refresh Status</button>
+  <header class="app-bar">
+    <button id="home-button" class="brand" type="button" aria-label="Go home">
+      <span class="brand-mark" aria-hidden="true">H</span><span>Here I Am</span>
+    </button>
+    <div class="app-actions">
+      <button id="text-size-button" class="icon-button" type="button" aria-label="Make text larger"><span aria-hidden="true">A+</span></button>
+      <button id="settings-button" class="icon-button" type="button" aria-label="Open settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm9 3.5-2.1-1.2.1-2.4-2.1-2.1-2.4.1L13.3 3h-2.6L9.5 6.4l-2.4-.1L5 8.4l.1 2.4L3 12l2.1 1.2-.1 2.4 2.1 2.1 2.4-.1 1.2 3.4h2.6l1.2-3.4 2.4.1 2.1-2.1-.1-2.4L21 12Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="scene-content" class="experience" tabindex="-1">
+    <section class="portrait-world" aria-labelledby="portrait-name">
+      <div class="orbit orbit-outer" aria-hidden="true"></div>
+      <div class="orbit orbit-inner" aria-hidden="true"></div>
+      <button id="avatar-button" class="portrait-button" type="button" aria-label="Customize portrait">
+        <span class="portrait-glow" aria-hidden="true"></span>
+        <span class="avatar-frame">
+          <img class="avatar" src="/static/assets/eric-bass-avatar-flat.webp" alt="Illustrated avatar inspired by Eric Bass" width="900" height="900" />
+        </span>
+        <span class="voice-ripples" aria-hidden="true"><i></i><i></i><i></i></span>
+      </button>
+      <div class="identity">
+        <h1 id="portrait-name">Here I Am</h1>
+        <p id="presence-status" role="status" aria-live="polite">Ready to talk</p>
       </div>
-      <div id="ollama-status" class="status-box">Checking Ollama status…</div>
     </section>
 
-    <section class="panel">
-      <h2>2. Learning Mode</h2>
-      <div class="row">
-        <button id="record-start" class="green">Record</button>
-        <button id="record-pause" class="yellow" disabled>Pause Recording</button>
-        <button id="record-stop" class="red" disabled>Stop Recording</button>
-      </div>
-      <div class="field-group">
-        <label for="record-title">Optional title</label>
-        <input id="record-title" type="text" placeholder="childhood memories, business ideas, family history" />
-      </div>
-      <div id="recording-status" class="status-box">Recorder idle</div>
-    </section>
+    <div class="scene-stack">
+      <section id="talk-scene" class="scene active" data-scene-panel="talk" aria-labelledby="talk-title">
+        <h2 id="talk-title" class="sr-only" tabindex="-1">Talk</h2>
+        <div id="talk-provider-badge" class="talk-provider-badge" role="status" aria-label="Selected answer engine">Best answer · OpenAI</div>
+        <div id="answer-card" class="answer-card" hidden>
+          <div id="answer-text" class="answer-text"></div>
+          <p id="answer-announcement" class="sr-only" role="status" aria-live="polite"></p>
+          <div class="answer-actions">
+            <button id="speak-answer" class="round-action" type="button" aria-label="Play this answer" disabled><span aria-hidden="true">▶</span><span>Play</span></button>
+            <button id="stop-speaking" class="round-action" type="button" aria-label="Stop speaking" hidden><span aria-hidden="true">■</span><span>Stop</span></button>
+            <button id="compare-answer" class="round-action compare-action" type="button" aria-label="Compare local and OpenAI answers" disabled><span aria-hidden="true">⇄</span><span>Compare</span></button>
+            <button id="feedback-up" class="reaction" type="button" aria-label="This answer felt right">♥</button>
+            <button id="clear-answer" class="reaction" type="button" aria-label="Clear this answer">×</button>
+          </div>
+        </div>
+        <div id="suggestions" class="question-ribbon" aria-label="Suggested questions">
+          <button type="button">What matters most to me?</button>
+          <button type="button">Tell me a family story.</button>
+          <button type="button">What have I said about work?</button>
+        </div>
+        <form id="chat-form" class="conversation-dock">
+          <button id="voice-question" class="dock-mic" type="button" aria-label="Ask using your voice">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 1 0-8 0v5a4 4 0 0 0 4 4Zm-7-4a7 7 0 0 0 14 0M12 18v4M8 22h8"/></svg>
+          </button>
+          <label class="sr-only" for="chat-question">Ask a question</label>
+          <textarea id="chat-question" rows="1" maxlength="8000" required placeholder="Ask me anything…"></textarea>
+          <button id="chat-send" class="dock-send" type="submit" aria-label="Ask question">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-8-4 16-3-6-7-2Zm7 2 7-10"/></svg>
+          </button>
+        </form>
+      </section>
 
-    <section class="panel">
-      <h2>3. Transcribing Mode</h2>
-      <div class="row">
-        <button id="transcribe-start" class="green">Generate Transcripts</button>
-      </div>
-      <div id="transcribe-status" class="status-box">No active transcription job</div>
-      <div class="progress-wrap"><progress id="transcribe-progress" max="100" value="0"></progress></div>
-    </section>
+      <section id="remember-scene" class="scene" data-scene-panel="remember" aria-labelledby="remember-title" hidden>
+        <div class="scene-card recording-card">
+          <p class="scene-kicker">Add to your story</p>
+          <h2 id="remember-title" tabindex="-1">What would you like to remember?</h2>
+          <fieldset class="recording-mode" aria-label="Who will be speaking">
+            <legend>Who is speaking?</legend>
+            <label><input id="record-mode-solo" type="radio" name="record-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong><small>One voice</small></span></label>
+            <label><input id="record-mode-conversation" type="radio" name="record-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>A conversation</strong><small>Two voices</small></span></label>
+          </fieldset>
+          <label class="floating-field" for="record-title"><span>Give this memory a name</span><input id="record-title" maxlength="160" placeholder="A summer afternoon…" /></label>
+          <canvas id="record-wave" width="700" height="110" role="img" aria-label="Live recording waveform. Recording status is described below."></canvas>
+          <div id="record-time" class="record-time">00:00</div>
+          <div class="record-controls">
+            <button id="record-start" class="record-orb" type="button"><span class="record-dot" aria-hidden="true"></span><span>Record</span></button>
+            <button id="record-pause" class="secondary-orb" type="button" disabled>Pause</button>
+            <button id="record-stop" class="secondary-orb save" type="button" disabled>Save</button>
+          </div>
+          <p id="recording-status" class="plain-status" role="status" aria-live="polite">Tap Record when you are ready.</p>
+        </div>
+      </section>
 
-    <section class="panel">
-      <h2>4. Analysis Mode</h2>
-      <div class="row">
-        <button id="analyze-start" class="green">Analyze Transcripts</button>
-      </div>
-      <div id="analyze-status" class="status-box">No active analysis job</div>
-      <div class="progress-wrap"><progress id="analyze-progress" max="100" value="0"></progress></div>
-    </section>
-
-    <section class="panel">
-      <h2>5. Here I Am</h2>
-      <div class="field-group">
-        <label for="chat-question">Ask a question</label>
-        <textarea id="chat-question" rows="5" placeholder="What themes recur in my life story? What did I say about my father? What matters most to me?"></textarea>
-      </div>
-      <div class="row">
-        <button id="chat-send" class="green">Ask</button>
-      </div>
-      <div id="chat-answer" class="status-box chat-box">No answer yet</div>
-    </section>
+      <section id="memories-scene" class="scene" data-scene-panel="memories" aria-labelledby="memories-title" hidden>
+        <div class="memory-heading">
+          <div><p class="scene-kicker">Your story</p><h2 id="memories-title" tabindex="-1">Memories</h2></div>
+          <label class="search-memory"><span class="sr-only">Search memories</span><input id="memory-search" type="search" placeholder="Find a memory…" /></label>
+        </div>
+        <section id="memory-queue" class="memory-queue" aria-labelledby="memory-queue-title" hidden>
+          <div class="queue-orb" aria-hidden="true"><strong id="memory-queue-count">0</strong><span>waiting</span></div>
+          <div class="queue-copy">
+            <p class="scene-kicker">Memory workshop</p>
+            <h3 id="memory-queue-title">New recordings are safely waiting</h3>
+            <p id="memory-queue-detail">Add them to Here I Am when you do not need to use the system for a while.</p>
+            <p id="memory-queue-error" class="memory-queue-error" role="alert" hidden></p>
+          </div>
+          <button id="memory-batch-open" class="primary-wide" type="button">Prepare all memories</button>
+        </section>
+        <section id="memory-import" class="memory-import" aria-labelledby="memory-import-title">
+          <div class="import-sound" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="import-copy">
+            <p class="scene-kicker">Bring in a recording</p>
+            <h3 id="memory-import-title">Drop a voice recording here</h3>
+            <p>Or choose one from this Mac. It will wait safely for your next private local memory batch.</p>
+          </div>
+          <input id="memory-upload-input" class="sr-only" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.aac,.ogg,.opus,.webm,.mp4" multiple />
+          <button id="memory-upload-choose" class="memory-upload-button" type="button">Choose recording</button>
+          <fieldset class="import-mode recording-mode" aria-label="Voices in the imported recording">
+            <legend>Voices in this recording</legend>
+            <label><input id="import-mode-solo" type="radio" name="import-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong></span></label>
+            <label><input id="import-mode-conversation" type="radio" name="import-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>Conversation</strong></span></label>
+          </fieldset>
+          <p id="memory-upload-status" class="memory-upload-status" role="status" aria-live="polite">The original stays on this Mac. A conversation analysis copy uses OpenAI only when you start the memory batch.</p>
+        </section>
+        <section id="speaker-review-queue" class="speaker-review-queue" hidden aria-labelledby="speaker-review-title">
+          <div class="voice-rings" aria-hidden="true"><i></i><i></i></div>
+          <div><p class="scene-kicker">Who was speaking?</p><h3 id="speaker-review-title">Name the voices before this becomes a memory</h3><p>The subject's words become memory evidence. Questions remain context only.</p></div>
+          <div id="speaker-review-buttons" class="speaker-review-buttons"></div>
+        </section>
+        <section id="speaker-gallery-section" class="speaker-gallery-section" hidden aria-labelledby="speaker-gallery-title">
+          <div class="memory-heading"><div><p class="scene-kicker">People in your story</p><h3 id="speaker-gallery-title">Voices and portraits</h3></div></div>
+          <div id="speaker-gallery" class="speaker-gallery"></div>
+        </section>
+        <div id="memory-summary" class="memory-count" aria-live="polite"></div>
+        <div id="memory-gallery" class="memory-gallery"></div>
+        <p id="library-status" class="plain-status" role="status" aria-live="polite"></p>
+      </section>
+    </div>
   </main>
 
+  <nav class="world-nav" aria-label="Main activities">
+    <button type="button" data-go="talk" class="active"><span class="nav-icon talk-icon" aria-hidden="true">✦</span><span>Talk</span></button>
+    <button type="button" data-go="remember"><span class="nav-icon" aria-hidden="true">●</span><span>Remember</span></button>
+    <button type="button" data-go="memories"><span class="nav-icon" aria-hidden="true">◫</span><span>Memories</span></button>
+  </nav>
+
+  <div id="activity-veil" class="activity-veil" hidden aria-live="polite">
+    <strong id="activity-title">Preparing your memory</strong><span id="activity-detail">This may take a little while.</span>
+  </div>
+
+  <div id="fetch-companion" class="fetch-companion" popover="manual" aria-hidden="true">
+    <span class="fetch-ball"></span>
+    <span class="fetch-dog" data-pose="running">
+      <img class="fetch-dog-running" src="/static/assets/fetch-dog.webp" alt="" width="1100" height="620" />
+      <img class="fetch-dog-sitting" src="/static/assets/fetch-dog-sitting.png" alt="" width="720" height="870" />
+    </span>
+  </div>
+
+  <dialog id="settings-dialog" class="sheet-dialog">
+    <form method="dialog" class="sheet">
+      <header><div><p class="scene-kicker">Make it yours</p><h2>Settings</h2></div><button class="close-button" value="close" aria-label="Close settings">×</button></header>
+      <div class="settings-grid">
+        <section><h3>Comfort</h3>
+          <label>Text size<select id="setting-text-size"><option value="standard">Standard</option><option value="large">Large</option><option value="largest">Largest</option></select></label>
+          <label class="switch"><input id="setting-motion" type="checkbox"/><span></span>Reduce motion</label>
+          <label class="switch"><input id="setting-contrast" type="checkbox"/><span></span>Extra contrast</label>
+          <label class="switch"><input id="setting-auto-speak" type="checkbox"/><span></span>Play answers automatically</label>
+        </section>
+        <section><h3>Thinking</h3>
+          <label>Answer style<select id="setting-fidelity"><option value="grounded">Concise</option><option value="balanced">Natural</option><option value="expressive">Most like me</option></select></label>
+          <label>Talk answer engine<select id="setting-provider"><option value="openai">Best answer — OpenAI GPT</option><option value="local">Private answer — Local Gemma</option></select></label>
+          <label id="cloud-model-label">OpenAI model<select id="setting-cloud-model"><option value="gpt-5.4-mini">GPT-5.4 mini — efficient answer</option></select></label>
+          <label id="cloud-key-label">Cloud API key<input id="setting-cloud-key" type="password" autocomplete="off" placeholder="Kept only until restart" /></label>
+          <p id="provider-readiness" class="provider-readiness" role="status"></p>
+          <p id="provider-note" class="setting-note"></p>
+          <p class="setting-note">The app never switches answer engines automatically. Embeddings and voice remain local in both modes. OpenAI receives only the current question, selected excerpts, and a short derived speaking-style profile.</p>
+        </section>
+        <section><h3>Voice</h3>
+          <p id="voice-setting-status" class="setting-note">Checking voice…</p>
+          <label class="switch"><input id="setting-pre-render-voice" type="checkbox"/><span></span>Prepare voice while I read</label>
+          <button id="voice-setup-button" class="wide-button" type="button">Set up my voice</button>
+          <button id="voice-cache-clear" class="text-button" type="button">Clear prepared voice files</button>
+          <button id="voice-revoke-button" class="text-button danger" type="button" hidden>Turn off and remove AI voice</button>
+        </section>
+        <section><h3>Care and maintenance</h3>
+          <button id="reconcile-run" class="wide-button" type="button">Check my memories</button>
+          <button id="backup-create" class="wide-button" type="button">Make a full safety copy</button>
+          <details><summary>Technical activity</summary><div id="technical-status"></div><button id="warm-model" type="button" class="text-button">Warm local AI</button></details>
+          <p id="build-version" class="setting-note">Build information is loading.</p>
+        </section>
+      </div>
+      <footer><button id="settings-save" class="primary-wide" type="button">Save settings</button><p id="settings-status" role="status"></p></footer>
+    </form>
+  </dialog>
+
+  <dialog id="benchmark-dialog" class="sheet-dialog benchmark-dialog">
+    <form method="dialog" class="sheet">
+      <header><div><p class="scene-kicker">Same memories. Two thinkers.</p><h2>Talk comparison</h2></div><button class="close-button" value="close" aria-label="Close comparison">×</button></header>
+      <p id="benchmark-status" class="plain-status" role="status">Preparing both answers…</p>
+      <div class="benchmark-grid">
+        <article><p class="scene-kicker">On this Mac</p><h3 id="benchmark-local-title">Local Gemma</h3><div id="benchmark-local-answer" class="benchmark-answer"></div></article>
+        <article><p class="scene-kicker">Railway access</p><h3 id="benchmark-openai-title">OpenAI</h3><div id="benchmark-openai-answer" class="benchmark-answer"></div></article>
+      </div>
+      <footer><button class="primary-wide" value="close">Done</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="avatar-dialog" class="sheet-dialog compact-sheet">
+    <form method="dialog" class="sheet">
+      <header><div><p class="scene-kicker">Your living portrait</p><h2>Portrait</h2></div><button class="close-button" value="close" aria-label="Close portrait settings">×</button></header>
+      <p class="setting-note">This illustrated living portrait is inspired by your supplied photograph. The world around it can still change with you.</p>
+      <div class="avatar-controls">
+        <label>Name<input id="avatar-name" maxlength="60" /></label>
+        <label>World<select id="avatar-backdrop"><option value="dusk">Dusk</option><option value="garden">Garden</option><option value="sunrise">Sunrise</option><option value="cosmos">Cosmos</option></select></label>
+      </div>
+      <footer><button id="avatar-save" class="primary-wide" type="button">Use this portrait</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="memory-dialog" class="memory-dialog">
+    <form method="dialog" class="memory-detail">
+      <header><div><p class="scene-kicker">Memory</p><h2 id="memory-dialog-title">Memory</h2></div><button class="close-button" value="close" aria-label="Close memory">×</button></header>
+      <div id="memory-meta" class="memory-meta"></div>
+      <label for="memory-transcript">Words from this memory</label>
+      <textarea id="memory-transcript" rows="14"></textarea>
+      <div class="detail-actions"><button id="memory-save" type="button" class="primary-wide">Save changes</button><a id="memory-export" class="wide-button" href="#">Take a copy</a></div>
+      <p id="memory-dialog-status" role="status"></p>
+    </form>
+  </dialog>
+
+  <dialog id="voice-dialog" class="sheet-dialog compact-sheet">
+    <form method="dialog" class="sheet">
+      <header><div><p class="scene-kicker">AI voice</p><h2>Let answers sound like you</h2></div><button class="close-button" value="close" aria-label="Close voice setup">×</button></header>
+      <p>Choose one clear recording. A short copy is prepared; your original is never changed.</p>
+      <label>Recording<select id="voice-candidate"></select></label>
+      <label>Voice engine<select id="voice-provider"><option value="local">On this Mac — private</option><option value="elevenlabs">ElevenLabs cloud</option></select></label>
+      <label class="consent-card"><input id="voice-consent" type="checkbox"/><span><strong>I have the right to use this voice.</strong><small>I understand that AI can make this voice say new words, and generated speech will be labeled. If I choose ElevenLabs, the short derived reference and answer text are sent to that provider.</small></span></label>
+      <button id="voice-create" class="primary-wide" type="button">Create my AI voice</button>
+      <p id="voice-dialog-status" role="status"></p>
+    </form>
+  </dialog>
+
+  <dialog id="memory-batch-dialog" class="sheet-dialog compact-sheet">
+    <div class="sheet memory-batch-sheet">
+      <header><div><p class="scene-kicker">Memory preparation</p><h2>Prepare queued memories?</h2></div><button id="memory-batch-close" class="close-button" type="button" aria-label="Close">×</button></header>
+      <div class="batch-model-mark" aria-hidden="true">G</div>
+      <p id="memory-batch-explanation">Solo recordings are prepared locally. Conversation recordings use cloud speaker recognition; understanding and embeddings remain local.</p>
+      <div class="batch-warning"><strong>Here I Am will be unavailable until this pass finishes.</strong><span>Conversation voices may need your review before local Gemma can connect them to memory.</span></div>
+      <label class="consent-card"><input id="memory-batch-confirm" type="checkbox"/><span><strong>I am ready to begin.</strong><small>I understand I should wait until the full batch is finished.</small></span></label>
+      <button id="memory-batch-start" class="primary-wide" type="button" disabled>Start local batch</button>
+      <p id="memory-batch-dialog-status" class="plain-status" role="status"></p>
+    </div>
+  </dialog>
+
+  <dialog id="speaker-review-dialog" class="sheet-dialog">
+    <div class="sheet speaker-review-sheet">
+      <header><div><p class="scene-kicker">A conversation</p><h2>Name each voice</h2></div><button id="speaker-review-close" class="close-button" type="button" aria-label="Close voice review">×</button></header>
+      <p class="setting-note">Listen to each voice, choose a person or add a new name, then identify the one person whose memories should be kept.</p>
+      <div id="speaker-clusters" class="speaker-clusters"></div>
+      <footer><button id="speaker-review-save" class="primary-wide" type="button">Save voices and prepare memory</button><p id="speaker-review-status" role="status" aria-live="polite"></p></footer>
+    </div>
+  </dialog>
+
+  <dialog id="speaker-avatar-dialog" class="sheet-dialog compact-sheet">
+    <div class="sheet speaker-avatar-sheet">
+      <header><div><p class="scene-kicker">A face for the voice</p><h2 id="speaker-avatar-title">Portrait</h2></div><button id="speaker-avatar-close" class="close-button" type="button" aria-label="Close speaker portrait">×</button></header>
+      <div class="speaker-avatar-preview"><img id="speaker-avatar-preview" alt="Speaker avatar preview" hidden /><span id="speaker-avatar-placeholder" aria-hidden="true">✦</span></div>
+      <p>Use an illustrated avatar you already have, or add a face photo and ask Here I Am to create a warm illustration in this app's style.</p>
+      <div class="avatar-choice-grid">
+        <label class="avatar-upload-choice"><strong>Use an avatar</strong><small>Upload an illustration</small><input id="speaker-avatar-upload" type="file" accept="image/*,.heic,.heif" /></label>
+        <label class="avatar-upload-choice"><strong>Use a face photo</strong><small>Store it here; create an illustration</small><input id="speaker-photo-upload" type="file" accept="image/*,.heic,.heif" /></label>
+      </div>
+      <label class="consent-card"><input id="speaker-photo-consent" type="checkbox"/><span><strong>I have the right to use this photo.</strong><small>Creating an illustration sends the photo and a style reference to OpenAI. The original also remains stored on this system.</small></span></label>
+      <button id="speaker-avatar-generate" class="primary-wide" type="button" disabled>Create illustrated avatar</button>
+      <p id="speaker-avatar-status" role="status" aria-live="polite"></p>
+    </div>
+  </dialog>
+
+  <dialog id="login-dialog" class="sheet-dialog compact-sheet">
+    <form id="login-form" class="sheet">
+      <header><div><p class="scene-kicker">Welcome back</p><h2>Sign in</h2></div></header>
+      <p class="setting-note">Enter the passphrase to continue.</p>
+      <label class="floating-field" for="login-passphrase"><span>Passphrase</span><input id="login-passphrase" type="password" autocomplete="current-password" required /></label>
+      <button id="login-submit" class="primary-wide" type="submit">Sign in</button>
+      <p id="login-status" role="status" aria-live="polite"></p>
+    </form>
+  </dialog>
+
+  <dialog id="onboarding-dialog" class="onboarding-dialog">
+    <div class="onboarding-card">
+      <div class="welcome-orb" aria-hidden="true">✦</div>
+      <p class="scene-kicker">Welcome</p><h2>Your stories can speak with you.</h2>
+      <p>Ask a question, record a memory, or browse the moments already here.</p>
+      <button id="onboarding-start" class="primary-wide" type="button">Enter Here I Am</button>
+    </div>
+  </dialog>
+
+  <script src="/static/app-core.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

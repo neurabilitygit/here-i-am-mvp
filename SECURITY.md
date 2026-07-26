@@ -1,0 +1,13 @@
+# Security boundary
+
+Here I Am is a single-user localhost application. Docker publishes the web service only on `127.0.0.1`; the Ollama and voice helpers must also remain loopback-only. Do not expose these ports to a LAN, reverse proxy, tunnel, or the public internet without adding user authentication and a separate threat-model review.
+
+The sanctioned non-localhost path is a private Tailscale mesh network, not a LAN binding or a public tunnel/reverse proxy. `scripts/enable_tailscale.sh` uses `tailscale serve` on the host to forward tailnet HTTPS traffic to the already-loopback-bound container port; the Docker port publishing itself never changes. Every request other than `/`, `/static/*`, `/api/health`, and the login/status/logout endpoints requires a valid session cookie, checked centrally in `app/main.py`'s `request_observability` middleware so new routes are protected by default. The shared login passphrase is verified with a stdlib PBKDF2-HMAC-SHA256 hash (600,000 iterations, random salt) stored via `AUTH_PASSPHRASE_HASH_FILE`; it is provisioned with `scripts/set_passphrase.py` and never stored in plaintext or committed. `scripts/start.sh` refuses to start without that file configured. Session tokens are opaque, only their SHA-256 hash is persisted, and repeated failed logins are locked out for `AUTH_LOCKOUT_SECONDS`.
+
+Production disables FastAPI documentation and Chroma telemetry, runs the application as a non-root user in a read-only container, drops capabilities, rejects browser mutations from unapproved origins, limits decoded upload duration and size, and returns opaque resource identifiers rather than host paths. The two native mutation bridges require a launcher-generated secret header in addition to binding only to loopback.
+
+OpenAI is optional and purpose-specific. Talk composition sends the current question, selected excerpts, and a bounded derived speaking-style profile. A user-selected conversation batch sends a compressed analysis copy of that recording for diarized transcription and known-speaker matching. Consented avatar generation sends the selected face photo and the application art reference. Metadata generation, embeddings, storage, solo transcription, and the local cloned voice remain local. Prefer `OPENAI_API_KEY_FILE` on a protected mount; never commit a credential or enter it into ordinary preferences.
+
+Chroma is append-only. No application or maintenance path may delete a Chroma record. Revisions and archives are enforced through the active filesystem version manifest and retrieval filtering.
+
+Report a suspected secret exposure, unexpected network listener, retrieval of an archived/superseded memory, or backup-integrity failure before continuing ordinary use.
