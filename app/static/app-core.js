@@ -19,6 +19,7 @@ const state = {
   voicePrerenderAbort: null, voicePrerenderRequestId: null, voicePrerenderText: '',
   voicePrerenderBlob: null, voicePrerenderFetchHeld: false, voicePrerenderGeneration: 0,
   audioContext: null, audioAnalyser: null, audioBufferSource: null, audioAnimation: null,
+  nativeAudio: null, nativeAudioUrl: '', voicePlaybackMethod: '',
   speechRecognition: null,
   fetchTaskCount: 0, fetchButtonUntil: 0, fetchGraceTimer: null, fetchHideTimer: null,
   fetchStartedAt: 0, fetchPoint: null, fetchMotionActive: false, fetchLoopRunning: false,

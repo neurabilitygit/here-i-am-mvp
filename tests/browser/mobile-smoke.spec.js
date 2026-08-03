@@ -51,3 +51,35 @@ test('recording mode choices stack in a single column on a phone-width viewport'
   const conversationBox = await conversation.boundingBox();
   expect(conversationBox.y).toBeGreaterThanOrEqual(soloBox.y + soloBox.height - 1);
 });
+
+test('a ready voice uses the native iPhone media route on the first tap', async ({page}) => {
+  await page.evaluate(() => {
+    window.__nativeAudioPlayCalls = 0;
+    HTMLMediaElement.prototype.play = function playProbe() {
+      window.__nativeAudioPlayCalls += 1;
+      queueMicrotask(() => this.onplaying?.());
+      return Promise.resolve();
+    };
+    HTMLMediaElement.prototype.pause = () => {};
+    HTMLMediaElement.prototype.load = () => {};
+    const state = window.HereIAmCore.state;
+    state.lastAnswer = 'A prepared answer for native iPhone playback.';
+    state.chatGeneration = 1;
+    state.voicePrerenderText = state.lastAnswer;
+    state.voicePrerenderGeneration = 1;
+    state.voicePrerenderBlob = new Blob(['prepared-voice'], {type: 'audio/wav'});
+    document.getElementById('answer-text').textContent = state.lastAnswer;
+    document.getElementById('answer-card').hidden = false;
+    window.updateSpeakButton();
+  });
+
+  expect(await page.evaluate(() => isIOSPlaybackDevice())).toBe(true);
+  await expect(page.locator('#speak-answer')).toContainText('Ready—Play');
+  await expect(page.locator('#speak-answer')).toBeEnabled();
+  await page.locator('#speak-answer').tap();
+
+  await expect.poll(() => page.evaluate(() => window.__nativeAudioPlayCalls)).toBe(1);
+  expect(await page.evaluate(() => window.HereIAmCore.state.voicePlaybackMethod)).toBe('html_audio');
+  expect(await page.evaluate(() => window.HereIAmCore.state.audioContext)).toBeNull();
+  await expect(page.locator('#stop-speaking')).toContainText('Playing');
+});

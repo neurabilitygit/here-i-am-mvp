@@ -115,7 +115,7 @@ def test_voice_completion_is_bound_to_the_answer_that_requested_it():
     assert 'voiceGeneration' in core
 
 
-def test_completed_voice_uses_unlocked_web_audio_and_explicit_states():
+def test_completed_voice_uses_web_audio_with_an_ios_native_media_fallback():
     root = Path(__file__).parents[1]
     script_path = root / 'app' / 'static' / 'app.js'
     if not script_path.exists():
@@ -125,6 +125,13 @@ def test_completed_voice_uses_unlocked_web_audio_and_explicit_states():
     assert 'decodeAudioData' in script
     assert 'createBufferSource' in script
     assert 'state.audio.play()' not in script
+    assert 'function isIOSPlaybackDevice()' in script
+    assert 'function playVoiceBlobNatively(blob)' in script
+    assert 'state.nativeAudio = new Audio()' in script
+    assert 'const playPromise = audio.play()' in script
+    assert "playback_method: 'html_audio'" in script
+    assert "playback_method: 'web_audio'" in script
+    assert "activity('voice_play_failed'" in script
     assert "'Preparing'" in script
     assert "'Ready—Play'" in script
     assert "textContent = 'Playing'" in script

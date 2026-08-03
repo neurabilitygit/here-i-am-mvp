@@ -674,6 +674,76 @@ function ensureBatchAudio() {
   return ensureStreamingAudio();
 }
 
+function isIOSPlaybackDevice() {
+  return /iPad|iPhone|iPod/i.test(navigator.userAgent || '')
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function releaseNativeAudio() {
+  const audio = state.nativeAudio;
+  if (audio) {
+    audio.onplaying = null;
+    audio.onended = null;
+    audio.onerror = null;
+    try { audio.pause(); } catch (_) {}
+    audio.removeAttribute('src');
+    try { audio.load(); } catch (_) {}
+  }
+  if (state.nativeAudioUrl) URL.revokeObjectURL(state.nativeAudioUrl);
+  state.nativeAudioUrl = '';
+}
+
+function playVoiceBlobNatively(blob) {
+  // iOS can report a running AudioContext and advance BufferSource time while
+  // its Web Audio session remains inaudible. A persistent media element, whose
+  // play() is invoked directly in the user's tap handler, uses the native media
+  // output route instead.
+  if (!state.nativeAudio) {
+    state.nativeAudio = new Audio();
+    state.nativeAudio.preload = 'auto';
+    state.nativeAudio.playsInline = true;
+  }
+  releaseNativeAudio();
+  const audio = state.nativeAudio;
+  const url = URL.createObjectURL(blob);
+  state.nativeAudioUrl = url;
+  audio.src = url;
+  let started = false;
+  audio.onplaying = () => {
+    if (started) return;
+    started = true;
+    const duration = Number.isFinite(audio.duration) ? Math.round(audio.duration * 10) / 10 : 0;
+    activity('voice_play_started', {bytes: blob.size, duration_seconds: duration, playback_method: 'html_audio', ios: true});
+  };
+  audio.onended = finishVoicePlayback;
+  audio.onerror = () => {
+    const media_error_code = audio.error?.code || 0;
+    activity('voice_play_failed', {playback_method: 'html_audio', ios: true, media_error_code});
+    stopSpeaking();
+    setPresence('This iPhone could not start the voice. Press Play to try again.', 'resting');
+  };
+  state.voicePlaying = true;
+  state.voicePlaybackMethod = 'html_audio';
+  state.voicePlaybackStartedAt = performance.now();
+  if (state.voiceFetchHeld) { state.voiceFetchHeld = false; endFetchTask(); }
+  window.clearTimeout(state.voiceTimeout);
+  state.voiceTimeout = null;
+  state.voicePreparing = false;
+  updateSpeakButton();
+  setPresence('Playing your completed AI voice recording', 'speaking');
+  document.querySelector('.portrait-glow').style.opacity = '.9';
+  const mouth = document.querySelector('.mouth-open');
+  if (mouth) mouth.style.transform = 'scaleY(1.8)';
+  const playPromise = audio.play();
+  return playPromise?.catch((error) => {
+    if (state.voicePlaying) {
+      activity('voice_play_failed', {playback_method: 'html_audio', ios: true, error_name: error.name || 'Error'});
+      stopSpeaking();
+    }
+    throw error;
+  });
+}
+
 function updateSpeakButton() {
   const button = byId('speak-answer');
   const label = button.querySelector('span:last-child');
@@ -756,6 +826,7 @@ async function startVoicePrerender() {
 
 async function playVoiceBlob(blob) {
   if (!blob?.size) throw new Error('The voice engine returned an empty audio file');
+  if (isIOSPlaybackDevice()) return playVoiceBlobNatively(blob);
   const context = ensureBatchAudio();
   const audioBuffer = await context.decodeAudioData((await blob.arrayBuffer()).slice(0));
   if (context.state !== 'running') await context.resume();
@@ -772,10 +843,11 @@ async function playVoiceBlob(blob) {
   state.voiceTimeout = null;
   state.voicePreparing = false;
   state.voicePlaying = true;
+  state.voicePlaybackMethod = 'web_audio';
   state.voicePlaybackStartedAt = performance.now();
   source.onended = finishVoicePlayback;
   source.start(0);
-  activity('voice_play_started', {bytes: blob.size, duration_seconds: Math.round(audioBuffer.duration * 10) / 10});
+  activity('voice_play_started', {bytes: blob.size, duration_seconds: Math.round(audioBuffer.duration * 10) / 10, playback_method: 'web_audio', context_state: context.state});
   updateSpeakButton();
   setPresence('Playing your completed AI voice recording', 'speaking');
   animateAudio();
@@ -787,8 +859,10 @@ async function playVoiceFile(response) {
 }
 
 function finishVoicePlayback() {
-  activity('voice_play_completed', {duration_ms: Math.round(performance.now() - (state.voicePlaybackStartedAt || performance.now()))});
+  activity('voice_play_completed', {duration_ms: Math.round(performance.now() - (state.voicePlaybackStartedAt || performance.now())), playback_method: state.voicePlaybackMethod || 'unknown'});
+  releaseNativeAudio();
   state.voicePlaying = false;
+  state.voicePlaybackMethod = '';
   state.voicePlaybackStartedAt = 0;
   state.audioBufferSource = null;
   state.voiceSources = [];
@@ -816,11 +890,21 @@ async function speakAnswer() {
     return;
   }
   stopSpeaking();
-  const context = ensureBatchAudio();
-  await context.resume();
-  if (state.voicePrerenderText === answerText && state.voicePrerenderGeneration === answerGeneration && state.voicePrerenderBlob?.size) {
-    await playVoiceBlob(state.voicePrerenderBlob);
+  if (isIOSPlaybackDevice() && state.voicePrerenderText === answerText && state.voicePrerenderGeneration === answerGeneration && state.voicePrerenderBlob?.size) {
+    try {
+      await playVoiceBlob(state.voicePrerenderBlob);
+    } catch (error) {
+      setPresence('This iPhone could not start the voice. Press Play to try again.', 'resting');
+    }
     return;
+  }
+  if (!isIOSPlaybackDevice()) {
+    const context = ensureBatchAudio();
+    await context.resume();
+    if (state.voicePrerenderText === answerText && state.voicePrerenderGeneration === answerGeneration && state.voicePrerenderBlob?.size) {
+      await playVoiceBlob(state.voicePrerenderBlob);
+      return;
+    }
   }
   const requestId = globalThis.crypto?.randomUUID?.() || `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const startedAt = performance.now();
@@ -852,6 +936,16 @@ async function speakAnswer() {
       return;
     }
     activity('voice_prepare_completed', {request_id: requestId, bytes: Number(response.headers.get('content-length')) || 0, duration_ms: Math.round(performance.now() - startedAt), automatic: false, generation: answerGeneration});
+    if (isIOSPlaybackDevice()) {
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('The voice engine returned an empty audio file');
+      state.voicePrerenderText = answerText;
+      state.voicePrerenderGeneration = answerGeneration;
+      state.voicePrerenderBlob = blob;
+      setPresence('Voice is ready — press Play', 'resting');
+      activity('voice_ready_waiting_for_tap', {request_id: requestId, bytes: blob.size, ios: true});
+      return;
+    }
     await playVoiceFile(response);
   } catch (error) {
     activity('voice_prepare_failed', {request_id: requestId, error_name: error.name || 'Error', duration_ms: Math.round(performance.now() - startedAt), automatic: false});
@@ -894,7 +988,9 @@ function stopSpeaking() {
     state.audioBufferSource.disconnect();
     state.audioBufferSource = null;
   }
+  releaseNativeAudio();
   state.voicePlaying = false;
+  state.voicePlaybackMethod = '';
   window.clearTimeout(state.voicePlaybackTimer);
   state.voicePlaybackTimer = null;
   window.cancelAnimationFrame(state.audioAnimation);
