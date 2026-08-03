@@ -93,6 +93,13 @@ def update_processing_state(session_path: Path, **updates: Any) -> None:
     save_json(state_path, state)
 
 
+def seal_until(session_path: Path, unlock_at: datetime) -> None:
+    if not session_path.exists():
+        raise FileNotFoundError('Session does not exist')
+    with session_lock(session_path.name):
+        update_processing_state(session_path, unlock_at=unlock_at.isoformat())
+
+
 def session_paths(session_path: Path) -> dict[str, Path]:
     return {
         'audio': session_path / 'recording.flac',

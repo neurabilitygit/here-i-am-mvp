@@ -33,6 +33,25 @@ def test_native_bridges_are_detached_and_read_the_protected_token():
     assert '"$VOICE_ENV/bin/python" -m uvicorn' in runner
 
 
+def test_production_launcher_connects_private_iphone_access_automatically():
+    root = Path(__file__).parents[1]
+    launcher = (root / 'scripts' / 'start.sh').read_text(encoding='utf-8')
+    connector = (root / 'scripts' / 'start_tailscale.sh').read_text(encoding='utf-8')
+    publisher = (root / 'scripts' / 'enable_tailscale.sh').read_text(encoding='utf-8')
+
+    assert 'HERE_I_AM_ENABLE_TAILSCALE' in launcher
+    assert 'scripts/start_tailscale.sh' in launcher
+    assert 'scripts/enable_tailscale.sh' in launcher
+    assert 'CORS_ORIGINS="$(append_csv_value' in launcher
+    assert 'TRUSTED_HOSTS="$(append_csv_value' in launcher
+    assert "APP_URL='http://127.0.0.1:8787'" in launcher
+    assert 'tailscale up >&2 &' in connector
+    assert 'for _ in $(seq 1 60)' in connector
+    assert 'tailscale up --reset' not in connector
+    assert 'BackendState' in connector
+    assert 'tailscale serve --bg "$LOCAL_APP_URL"' in publisher
+
+
 def test_voice_environment_is_built_at_its_final_absolute_path():
     root = Path(__file__).parents[1]
     launcher = (root / 'scripts' / 'start_voice.sh').read_text(encoding='utf-8')
@@ -96,7 +115,7 @@ def test_voice_completion_is_bound_to_the_answer_that_requested_it():
     assert 'voiceGeneration' in core
 
 
-def test_completed_voice_uses_unlocked_web_audio_and_explicit_states():
+def test_completed_voice_uses_web_audio_with_an_ios_native_media_fallback():
     root = Path(__file__).parents[1]
     script_path = root / 'app' / 'static' / 'app.js'
     if not script_path.exists():
@@ -106,6 +125,13 @@ def test_completed_voice_uses_unlocked_web_audio_and_explicit_states():
     assert 'decodeAudioData' in script
     assert 'createBufferSource' in script
     assert 'state.audio.play()' not in script
+    assert 'function isIOSPlaybackDevice()' in script
+    assert 'function playVoiceBlobNatively(blob)' in script
+    assert 'state.nativeAudio = new Audio()' in script
+    assert 'const playPromise = audio.play()' in script
+    assert "playback_method: 'html_audio'" in script
+    assert "playback_method: 'web_audio'" in script
+    assert "activity('voice_play_failed'" in script
     assert "'Preparing'" in script
     assert "'Ready—Play'" in script
     assert "textContent = 'Playing'" in script

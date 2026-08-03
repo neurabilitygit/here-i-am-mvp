@@ -19,6 +19,17 @@ if [[ -f "$SOURCE_DIR/.env" ]]; then
   set +a
 fi
 
+HERE_I_AM_ENABLE_TAILSCALE="${HERE_I_AM_ENABLE_TAILSCALE:-true}"
+
+append_csv_value() {
+  local current="$1" value="$2" item
+  IFS=',' read -r -a items <<<"$current"
+  for item in "${items[@]}"; do
+    [[ "$item" == "$value" ]] && { printf '%s' "$current"; return; }
+  done
+  if [[ -n "$current" ]]; then printf '%s,%s' "$current" "$value"; else printf '%s' "$value"; fi
+}
+
 wait_for_url() {
   local url="$1" timeout="$2" label="$3" elapsed=0
   printf 'Waiting for %s' "$label"
@@ -47,6 +58,19 @@ if [[ ! -s "$AUTH_PASSPHRASE_HASH_FILE_PATH" ]]; then
 fi
 AUTH_PASSPHRASE_HASH_HOST_FILE="$AUTH_PASSPHRASE_HASH_FILE_PATH"
 export AUTH_PASSPHRASE_HASH_HOST_FILE
+
+TAILSCALE_DNS_NAME=''
+if [[ "$HERE_I_AM_ENABLE_TAILSCALE" == 'true' ]]; then
+  TAILSCALE_DNS_NAME="$("$SOURCE_DIR/scripts/start_tailscale.sh")"
+  export TAILSCALE_DNS_NAME
+  CORS_ORIGINS="$(append_csv_value "${CORS_ORIGINS:-http://localhost:8787,http://127.0.0.1:8787}" "https://$TAILSCALE_DNS_NAME")"
+  TRUSTED_HOSTS="$(append_csv_value "${TRUSTED_HOSTS:-localhost,127.0.0.1,testserver,host.docker.internal}" "$TAILSCALE_DNS_NAME")"
+  export CORS_ORIGINS TRUSTED_HOSTS
+elif [[ "$HERE_I_AM_ENABLE_TAILSCALE" != 'false' ]]; then
+  echo 'HERE_I_AM_ENABLE_TAILSCALE must be true or false.' >&2
+  exit 1
+fi
+
 HERE_I_AM_DATA_DIR="$DATA_DIR"
 VOICE_HOST_DATA_ROOT="$DATA_DIR"
 HERE_I_AM_VOICE_DATA_ROOT="$DATA_DIR"
@@ -150,5 +174,11 @@ fi
 (cd "$BUILD_DIR" && docker compose up -d --build --force-recreate)
 wait_for_url http://127.0.0.1:8787/api/ready 240 'Here I Am'
 
-if [[ "${HERE_I_AM_OPEN_BROWSER:-true}" == 'true' ]]; then open -a Safari http://127.0.0.1:8787; fi
-echo 'Here I Am is ready at http://127.0.0.1:8787'
+APP_URL='http://127.0.0.1:8787'
+if [[ "$HERE_I_AM_ENABLE_TAILSCALE" == 'true' ]]; then
+  "$SOURCE_DIR/scripts/enable_tailscale.sh"
+  APP_URL="https://$TAILSCALE_DNS_NAME"
+fi
+
+if [[ "${HERE_I_AM_OPEN_BROWSER:-true}" == 'true' ]]; then open -a Safari "$APP_URL"; fi
+echo "Here I Am is ready at $APP_URL"

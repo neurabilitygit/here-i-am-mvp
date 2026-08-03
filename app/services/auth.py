@@ -125,7 +125,7 @@ def _save_tokens(tokens: list[dict]) -> None:
 def _not_expired(entry: dict, now: datetime) -> bool:
     try:
         return datetime.fromisoformat(entry['expires_at']) > now
-    except (KeyError, ValueError):
+    except (KeyError, TypeError, ValueError):
         return False
 
 

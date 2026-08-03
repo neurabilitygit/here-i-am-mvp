@@ -4,7 +4,7 @@
 
 1. Confirm `/Volumes/Personal/here-i-am` is mounted.
 2. Confirm native Ollama responds at `http://127.0.0.1:11434/api/tags`.
-3. Run `scripts/start.sh`, which creates a clean build snapshot under `/tmp` before Docker sees the source.
+3. Run `scripts/start.sh`, which starts/reconnects Tailscale, creates a clean build snapshot under `/tmp`, starts the application, and publishes its authenticated loopback listener to the private tailnet.
 4. Check `/api/health` for application/storage liveness and `/api/ready` for Ollama readiness.
 5. The production launcher starts the cloned-voice and Ollama-control bridges in detached native process sessions; check `http://127.0.0.1:8779/health` and `http://127.0.0.1:8778/ollama/status`.
 
@@ -14,12 +14,12 @@ For the current Railway-backed OpenAI benchmark, the desktop launcher reads `OPE
 
 Here I Am can be reached from a phone without exposing any port to the LAN or the public internet, using a private Tailscale mesh network plus a login gate:
 
-1. Install Tailscale on this Mac and on the phone, and sign both into the same tailnet (`tailscale up` on the Mac).
+1. Install Tailscale on this Mac and on the phone, and sign both into the same tailnet once.
 2. Set the shared login passphrase once: `./scripts/set_passphrase.py`. This writes a PBKDF2 hash (never the plaintext) to a mode-600 file under the same secret directory as `local_bridge_token`; `scripts/start.sh` refuses to start without it.
-3. Run `./scripts/start.sh` as usual.
-4. Run `./scripts/enable_tailscale.sh`. It runs `tailscale serve` to forward this device's tailnet HTTPS listener to `http://127.0.0.1:8787` — the Docker port binding itself stays loopback-only; only `tailscaled` on the host proxies tailnet traffic to it. The script prints the tailnet HTTPS URL (e.g. `https://your-mac.your-tailnet.ts.net`).
-5. Add that hostname to `.env`'s `CORS_ORIGINS` and `TRUSTED_HOSTS` (see `.env.example` for the exact lines) and re-run `scripts/start.sh` to pick up the change.
-6. Open the printed URL on the phone and log in with the passphrase from step 2. The session cookie is `HttpOnly`, `Secure`, and expires after `AUTH_TOKEN_TTL_SECONDS` (default 30 days).
+3. Run `./scripts/start.sh` as usual. The launcher opens the Tailscale app if needed, reconnects without changing the device's existing tailnet configuration, discovers its MagicDNS hostname, adds the matching HTTPS origin and trusted host to the container environment, and runs `tailscale serve` after the application is ready. Docker remains bound to `127.0.0.1:8787`; only Tailscale's private host proxy can reach it remotely.
+4. Open the HTTPS URL printed by the launcher on the iPhone while its Tailscale connection is active, then log in with the passphrase from step 2. The session cookie is `HttpOnly`, `Secure`, and expires after `AUTH_TOKEN_TTL_SECONDS` (default 30 days).
+
+For deliberate local-only maintenance, run `HERE_I_AM_ENABLE_TAILSCALE=false ./scripts/start.sh`. Any other value fails closed. `./scripts/enable_tailscale.sh` remains available as a standalone repair command and now starts or reconnects Tailscale itself.
 
 Every route except `/`, `/static/*`, `/api/health`, and the login/status/logout endpoints requires a valid session cookie — enforced centrally in `request_observability` in `app/main.py`, so new routes are protected by default. Repeated wrong passphrases lock out further attempts for `AUTH_LOCKOUT_SECONDS` (default 15 minutes).
 

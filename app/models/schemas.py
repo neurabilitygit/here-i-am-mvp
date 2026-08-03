@@ -62,6 +62,20 @@ class GenericStatus(BaseModel):
     detail: str
 
 
+class PromptOfTheDay(BaseModel):
+    prompt: str
+
+
+class QuizPrompt(BaseModel):
+    session_id: str
+    topic_hint: str
+    quote: str
+
+
+class SealRequest(BaseModel):
+    unlock_at: datetime
+
+
 class AuthLoginRequest(BaseModel):
     passphrase: str = Field(min_length=1, max_length=512)
 
@@ -134,6 +148,13 @@ class SessionSummary(BaseModel):
     recording_mode: Literal['solo', 'conversation'] = 'solo'
     speaker_review_status: str = 'not_required'
     speaker_count: int = 1
+    recorded_at: str = ''
+    time_period: str | list[str] = ''
+    emotional_tone: str | list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
+    notable_events: list[str] = Field(default_factory=list)
+    sealed: bool = False
+    unlock_at: str | None = None
 
 
 class SessionDetail(SessionSummary):
@@ -299,6 +320,8 @@ class VoiceStatus(BaseModel):
     bridge_request_id: str = ''
     cloud_voice_configured: bool = False
     voice_id: str = ''
+    cloud_deletion_pending: bool = False
+    cloud_deletion_error: str = ''
 
 
 class VoicePrepareRequest(BaseModel):

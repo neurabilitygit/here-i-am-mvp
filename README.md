@@ -88,4 +88,4 @@ See [Immersive product plan](docs/IMMERSIVE_PRODUCT_PLAN.md) and [voice/cloud co
 
 ## Mobile access
 
-Here I Am now requires logging in with a shared passphrase (`./scripts/set_passphrase.py` to set it) and can be reached from a phone over a private Tailscale mesh network — never a LAN binding or a public tunnel. See [Operations: Remote access via Tailscale](docs/OPERATIONS.md#remote-access-via-tailscale) for setup.
+Here I Am requires logging in with a shared passphrase (`./scripts/set_passphrase.py` to set it). The normal `./scripts/start.sh` launcher now starts or reconnects Tailscale and publishes the authenticated loopback service through private tailnet HTTPS automatically; it never creates a LAN binding or public tunnel. Open the printed HTTPS URL on an iPhone signed into the same tailnet. Set `HERE_I_AM_ENABLE_TAILSCALE=false` only for an intentional local-only run. See [Operations: Remote access via Tailscale](docs/OPERATIONS.md#remote-access-via-tailscale) for setup.

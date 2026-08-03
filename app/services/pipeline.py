@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import chromadb
@@ -14,7 +16,7 @@ from faster_whisper import WhisperModel
 from chromadb.api.types import EmbeddingFunction
 
 from config import settings
-from models.schemas import BenchmarkAnswer, ChatBenchmarkResponse, ChatResponse, ChatSource, TranscriptMetadata
+from models.schemas import BenchmarkAnswer, ChatBenchmarkResponse, ChatResponse, ChatSource, QuizPrompt, TranscriptMetadata
 from services.jobs import job_manager
 from services.ollama_client import ollama_client
 from services.fidelity import build_speaker_fingerprint, fingerprint_prompt
@@ -130,6 +132,13 @@ def active_index_versions() -> dict[str, str]:
             continue
         if not state.get('embedded', False):
             continue
+        unlock_at = state.get('unlock_at')
+        if unlock_at:
+            try:
+                if datetime.fromisoformat(unlock_at) > datetime.now(timezone.utc):
+                    continue
+            except (TypeError, ValueError):
+                pass  # malformed unlock_at fails open rather than sealing forever
         active[session.name] = str(state.get('active_content_version') or 'legacy')
     return active
 
@@ -141,6 +150,25 @@ def record_is_active(metadata: dict, active_versions: dict[str, str]) -> bool:
         return False
     actual = str(metadata.get('content_version') or 'legacy')
     return actual == expected
+
+
+def read_active_chunks(session_id: str, active_versions: dict[str, str] | None = None) -> list[dict]:
+    """Read a session's currently-active chunk records (never stale/archived ones)."""
+    if active_versions is None:
+        active_versions = active_index_versions()
+    try:
+        session = safe_session_dir(session_id)
+        expected = active_versions.get(session_id)
+        versioned = session / 'versions' / str(expected) / 'chunks.jsonl'
+        path = versioned if expected and expected != 'legacy' and versioned.exists() else session_paths(session)['chunks']
+        records = []
+        for line in path.read_text(encoding='utf-8').splitlines():
+            value = json.loads(line)
+            if record_is_active(dict(value.get('metadata') or {}), active_versions):
+                records.append(value)
+        return records
+    except (FileNotFoundError, ValueError, json.JSONDecodeError):
+        return []
 
 
 def active_chroma_filter(active_versions: dict[str, str]) -> dict | None:
@@ -1136,6 +1164,46 @@ def query_context_with_distances(question: str, n_results: int | None = None) ->
         [item[1] for item in selected],
         [item[2] for item in selected],
     )
+
+
+def related_sessions(session_id: str, limit: int = 3) -> list[ChatSource]:
+    session_path = safe_session_dir(session_id)
+    if not session_path.exists():
+        raise FileNotFoundError('Session does not exist')
+    metadata_path = session_paths(session_path)['metadata']
+    metadata = load_json(metadata_path) if metadata_path.exists() else {}
+    query_text = str(metadata.get('summary') or metadata.get('title') or '').strip()
+    if not query_text:
+        return []
+    _docs, metas, distances = query_context_with_distances(query_text, n_results=8)
+    filtered_metas, filtered_distances = [], []
+    for meta, distance in zip(metas, distances):
+        if str(meta.get('session_id', '')) == session_id:
+            continue
+        filtered_metas.append(meta)
+        filtered_distances.append(distance)
+    return build_sources(filtered_metas, filtered_distances)[:limit]
+
+
+def sample_quiz_prompt(exclude_session_ids: set[str] | None = None) -> QuizPrompt | None:
+    active_versions = active_index_versions()
+    candidate_ids = [
+        session_id for session_id in active_versions
+        if not exclude_session_ids or session_id not in exclude_session_ids
+    ]
+    random.shuffle(candidate_ids)
+    for session_id in candidate_ids:
+        records = read_active_chunks(session_id, active_versions)
+        random.shuffle(records)
+        for record in records:
+            quote = subject_evidence_only(str(record.get('text', ''))).strip()
+            if len(quote) < 40:
+                continue
+            metadata = record.get('metadata') or {}
+            topics = metadata.get('topics') or ''
+            topic_hint = str(topics).strip() or str(metadata.get('title') or '').strip() or 'something you shared'
+            return QuizPrompt(session_id=session_id, topic_hint=topic_hint, quote=quote)
+    return None
 
 
 def build_sources(metas: list[dict], distances: list[float]) -> list[ChatSource]:

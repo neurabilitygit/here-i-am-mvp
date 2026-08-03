@@ -49,6 +49,23 @@
     <div class="scene-stack">
       <section id="talk-scene" class="scene active" data-scene-panel="talk" aria-labelledby="talk-title">
         <h2 id="talk-title" class="sr-only" tabindex="-1">Talk</h2>
+        <section id="on-this-day" class="memory-queue on-this-day" hidden role="status" aria-live="polite" aria-labelledby="on-this-day-title">
+          <div class="queue-orb" aria-hidden="true"><span>✦</span></div>
+          <div class="queue-copy">
+            <p class="scene-kicker">On this day</p>
+            <h3 id="on-this-day-title"></h3>
+            <p id="on-this-day-detail"></p>
+          </div>
+          <button id="on-this-day-open" class="primary-wide" type="button">Listen again</button>
+        </section>
+        <section id="return-nudge" class="memory-queue return-nudge" hidden role="status" aria-live="polite" aria-labelledby="return-nudge-title">
+          <div class="queue-orb" aria-hidden="true"><span>●</span></div>
+          <div class="queue-copy">
+            <p class="scene-kicker">It's been a while</p>
+            <h3 id="return-nudge-title"></h3>
+          </div>
+          <button id="return-nudge-dismiss" class="text-button" type="button">Not now</button>
+        </section>
         <div id="talk-provider-badge" class="talk-provider-badge" role="status" aria-label="Selected answer engine">Best answer · OpenAI</div>
         <div id="answer-card" class="answer-card" hidden>
           <div id="answer-text" class="answer-text"></div>
@@ -65,6 +82,7 @@
           <button type="button">What matters most to me?</button>
           <button type="button">Tell me a family story.</button>
           <button type="button">What have I said about work?</button>
+          <button id="quiz-open" type="button">Do you remember?</button>
         </div>
         <form id="chat-form" class="conversation-dock">
           <button id="voice-question" class="dock-mic" type="button" aria-label="Ask using your voice">
@@ -82,12 +100,15 @@
         <div class="scene-card recording-card">
           <p class="scene-kicker">Add to your story</p>
           <h2 id="remember-title" tabindex="-1">What would you like to remember?</h2>
+          <p id="remember-prompt" class="plain-status prompt-of-the-day"></p>
           <fieldset class="recording-mode" aria-label="Who will be speaking">
             <legend>Who is speaking?</legend>
             <label><input id="record-mode-solo" type="radio" name="record-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong><small>One voice</small></span></label>
             <label><input id="record-mode-conversation" type="radio" name="record-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>A conversation</strong><small>Two voices</small></span></label>
           </fieldset>
           <label class="floating-field" for="record-title"><span>Give this memory a name</span><input id="record-title" maxlength="160" placeholder="A summer afternoon…" /></label>
+          <label class="switch"><input id="record-seal" type="checkbox"/><span></span>Seal until a future date</label>
+          <label class="floating-field" id="record-seal-date-field" hidden for="record-seal-date"><span>Unlock on</span><input id="record-seal-date" type="date" /></label>
           <canvas id="record-wave" width="700" height="110" role="img" aria-label="Live recording waveform. Recording status is described below."></canvas>
           <div id="record-time" class="record-time">00:00</div>
           <div class="record-controls">
@@ -96,6 +117,7 @@
             <button id="record-stop" class="secondary-orb save" type="button" disabled>Save</button>
           </div>
           <p id="recording-status" class="plain-status" role="status" aria-live="polite">Tap Record when you are ready.</p>
+          <button id="record-retry" class="wide-button" type="button" hidden>Try saving again</button>
         </div>
       </section>
 
@@ -103,6 +125,10 @@
         <div class="memory-heading">
           <div><p class="scene-kicker">Your story</p><h2 id="memories-title" tabindex="-1">Memories</h2></div>
           <label class="search-memory"><span class="sr-only">Search memories</span><input id="memory-search" type="search" placeholder="Find a memory…" /></label>
+          <div class="view-toggle" role="tablist" aria-label="Memories view">
+            <button id="memory-view-grid" type="button" aria-pressed="true">Grid</button>
+            <button id="memory-view-timeline" type="button" aria-pressed="false">Timeline</button>
+          </div>
         </div>
         <section id="memory-queue" class="memory-queue" aria-labelledby="memory-queue-title" hidden>
           <div class="queue-orb" aria-hidden="true"><strong id="memory-queue-count">0</strong><span>waiting</span></div>
@@ -130,6 +156,14 @@
           </fieldset>
           <p id="memory-upload-status" class="memory-upload-status" role="status" aria-live="polite">The original stays on this Mac. A conversation analysis copy uses OpenAI only when you start the memory batch.</p>
         </section>
+        <section id="sealed-letters" class="memory-queue sealed-letters" hidden role="status" aria-live="polite" aria-labelledby="sealed-letters-title">
+          <div class="queue-orb" aria-hidden="true"><span>✦</span></div>
+          <div class="queue-copy">
+            <p class="scene-kicker">Letters to the future</p>
+            <h3 id="sealed-letters-title"></h3>
+            <p id="sealed-letters-detail"></p>
+          </div>
+        </section>
         <section id="speaker-review-queue" class="speaker-review-queue" hidden aria-labelledby="speaker-review-title">
           <div class="voice-rings" aria-hidden="true"><i></i><i></i></div>
           <div><p class="scene-kicker">Who was speaking?</p><h3 id="speaker-review-title">Name the voices before this becomes a memory</h3><p>The subject's words become memory evidence. Questions remain context only.</p></div>
@@ -141,6 +175,12 @@
         </section>
         <div id="memory-summary" class="memory-count" aria-live="polite"></div>
         <div id="memory-gallery" class="memory-gallery"></div>
+        <div id="memory-timeline" class="memory-timeline" hidden></div>
+        <section id="tone-reflection" class="scene-card tone-reflection" hidden>
+          <p class="scene-kicker">How feelings have moved</p>
+          <h3>Emotional tones over time</h3>
+          <svg id="tone-chart" viewBox="0 0 700 200" role="img" aria-label="Emotional tone across recordings over time"></svg>
+        </section>
         <p id="library-status" class="plain-status" role="status" aria-live="polite"></p>
       </section>
     </div>
@@ -233,6 +273,10 @@
       <textarea id="memory-transcript" rows="14"></textarea>
       <div class="detail-actions"><button id="memory-save" type="button" class="primary-wide">Save changes</button><a id="memory-export" class="wide-button" href="#">Take a copy</a></div>
       <p id="memory-dialog-status" role="status"></p>
+      <section id="related-memories" class="related-memories" hidden>
+        <p class="scene-kicker">You also talked about this in</p>
+        <div id="related-memories-list"></div>
+      </section>
     </form>
   </dialog>
 
@@ -246,6 +290,16 @@
       <button id="voice-create" class="primary-wide" type="button">Create my AI voice</button>
       <p id="voice-dialog-status" role="status"></p>
     </form>
+  </dialog>
+
+  <dialog id="quiz-dialog" class="sheet-dialog compact-sheet">
+    <div class="sheet quiz-sheet">
+      <header><div><p class="scene-kicker">Do you remember?</p><h2 id="quiz-title"></h2></div><button id="quiz-close" class="close-button" type="button" aria-label="Close">×</button></header>
+      <p id="quiz-quote" class="answer-text" hidden></p>
+      <button id="quiz-reveal" class="primary-wide" type="button">Show what I said</button>
+      <button id="quiz-next" class="wide-button" type="button" hidden>Ask me another</button>
+      <p id="quiz-status" class="plain-status" role="status"></p>
+    </div>
   </dialog>
 
   <dialog id="memory-batch-dialog" class="sheet-dialog compact-sheet">

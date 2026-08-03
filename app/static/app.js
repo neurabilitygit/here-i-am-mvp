@@ -194,6 +194,10 @@ function notifyIfAuthRequired(response) {
 function showLoginDialog() {
   const dialog = byId('login-dialog');
   if (dialog.open) return;
+  // A session can expire while any other dialog is open (quiz, memory
+  // detail, voice setup, ...); close whatever's open so the login prompt
+  // doesn't stack on top of stale, pre-expiry state.
+  document.querySelectorAll('dialog[open]').forEach((other) => { if (other !== dialog) other.close(); });
   const status = byId('login-status');
   const input = byId('login-passphrase');
   status.textContent = '';
@@ -236,8 +240,9 @@ function showScene(name, reason = 'programmatic') {
     panel.classList.toggle('active', active);
   });
   document.querySelectorAll('[data-go]').forEach((button) => button.classList.toggle('active', button.dataset.go === name));
-  if (name === 'memories') Promise.all([refreshLibrary(), refreshMemoryQueue(), refreshSpeakers()]);
-  if (name === 'talk') byId('chat-question').focus();
+  if (name === 'memories') Promise.all([refreshLibrary(), refreshMemoryQueue(), refreshSpeakers(), refreshSealedLetters()]);
+  if (name === 'remember') refreshPromptOfTheDay();
+  if (name === 'talk') { byId('chat-question').focus(); refreshTalkBanners(); }
   else window.requestAnimationFrame(() => byId(`${name}-title`)?.focus());
   if (previous !== name) activity('scene_changed', {
     from: previous, to: name, reason, has_answer: Boolean(state.lastAnswer),
@@ -669,6 +674,76 @@ function ensureBatchAudio() {
   return ensureStreamingAudio();
 }
 
+function isIOSPlaybackDevice() {
+  return /iPad|iPhone|iPod/i.test(navigator.userAgent || '')
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function releaseNativeAudio() {
+  const audio = state.nativeAudio;
+  if (audio) {
+    audio.onplaying = null;
+    audio.onended = null;
+    audio.onerror = null;
+    try { audio.pause(); } catch (_) {}
+    audio.removeAttribute('src');
+    try { audio.load(); } catch (_) {}
+  }
+  if (state.nativeAudioUrl) URL.revokeObjectURL(state.nativeAudioUrl);
+  state.nativeAudioUrl = '';
+}
+
+function playVoiceBlobNatively(blob) {
+  // iOS can report a running AudioContext and advance BufferSource time while
+  // its Web Audio session remains inaudible. A persistent media element, whose
+  // play() is invoked directly in the user's tap handler, uses the native media
+  // output route instead.
+  if (!state.nativeAudio) {
+    state.nativeAudio = new Audio();
+    state.nativeAudio.preload = 'auto';
+    state.nativeAudio.playsInline = true;
+  }
+  releaseNativeAudio();
+  const audio = state.nativeAudio;
+  const url = URL.createObjectURL(blob);
+  state.nativeAudioUrl = url;
+  audio.src = url;
+  let started = false;
+  audio.onplaying = () => {
+    if (started) return;
+    started = true;
+    const duration = Number.isFinite(audio.duration) ? Math.round(audio.duration * 10) / 10 : 0;
+    activity('voice_play_started', {bytes: blob.size, duration_seconds: duration, playback_method: 'html_audio', ios: true});
+  };
+  audio.onended = finishVoicePlayback;
+  audio.onerror = () => {
+    const media_error_code = audio.error?.code || 0;
+    activity('voice_play_failed', {playback_method: 'html_audio', ios: true, media_error_code});
+    stopSpeaking();
+    setPresence('This iPhone could not start the voice. Press Play to try again.', 'resting');
+  };
+  state.voicePlaying = true;
+  state.voicePlaybackMethod = 'html_audio';
+  state.voicePlaybackStartedAt = performance.now();
+  if (state.voiceFetchHeld) { state.voiceFetchHeld = false; endFetchTask(); }
+  window.clearTimeout(state.voiceTimeout);
+  state.voiceTimeout = null;
+  state.voicePreparing = false;
+  updateSpeakButton();
+  setPresence('Playing your completed AI voice recording', 'speaking');
+  document.querySelector('.portrait-glow').style.opacity = '.9';
+  const mouth = document.querySelector('.mouth-open');
+  if (mouth) mouth.style.transform = 'scaleY(1.8)';
+  const playPromise = audio.play();
+  return playPromise?.catch((error) => {
+    if (state.voicePlaying) {
+      activity('voice_play_failed', {playback_method: 'html_audio', ios: true, error_name: error.name || 'Error'});
+      stopSpeaking();
+    }
+    throw error;
+  });
+}
+
 function updateSpeakButton() {
   const button = byId('speak-answer');
   const label = button.querySelector('span:last-child');
@@ -751,6 +826,7 @@ async function startVoicePrerender() {
 
 async function playVoiceBlob(blob) {
   if (!blob?.size) throw new Error('The voice engine returned an empty audio file');
+  if (isIOSPlaybackDevice()) return playVoiceBlobNatively(blob);
   const context = ensureBatchAudio();
   const audioBuffer = await context.decodeAudioData((await blob.arrayBuffer()).slice(0));
   if (context.state !== 'running') await context.resume();
@@ -767,10 +843,11 @@ async function playVoiceBlob(blob) {
   state.voiceTimeout = null;
   state.voicePreparing = false;
   state.voicePlaying = true;
+  state.voicePlaybackMethod = 'web_audio';
   state.voicePlaybackStartedAt = performance.now();
   source.onended = finishVoicePlayback;
   source.start(0);
-  activity('voice_play_started', {bytes: blob.size, duration_seconds: Math.round(audioBuffer.duration * 10) / 10});
+  activity('voice_play_started', {bytes: blob.size, duration_seconds: Math.round(audioBuffer.duration * 10) / 10, playback_method: 'web_audio', context_state: context.state});
   updateSpeakButton();
   setPresence('Playing your completed AI voice recording', 'speaking');
   animateAudio();
@@ -782,8 +859,10 @@ async function playVoiceFile(response) {
 }
 
 function finishVoicePlayback() {
-  activity('voice_play_completed', {duration_ms: Math.round(performance.now() - (state.voicePlaybackStartedAt || performance.now()))});
+  activity('voice_play_completed', {duration_ms: Math.round(performance.now() - (state.voicePlaybackStartedAt || performance.now())), playback_method: state.voicePlaybackMethod || 'unknown'});
+  releaseNativeAudio();
   state.voicePlaying = false;
+  state.voicePlaybackMethod = '';
   state.voicePlaybackStartedAt = 0;
   state.audioBufferSource = null;
   state.voiceSources = [];
@@ -811,11 +890,21 @@ async function speakAnswer() {
     return;
   }
   stopSpeaking();
-  const context = ensureBatchAudio();
-  await context.resume();
-  if (state.voicePrerenderText === answerText && state.voicePrerenderGeneration === answerGeneration && state.voicePrerenderBlob?.size) {
-    await playVoiceBlob(state.voicePrerenderBlob);
+  if (isIOSPlaybackDevice() && state.voicePrerenderText === answerText && state.voicePrerenderGeneration === answerGeneration && state.voicePrerenderBlob?.size) {
+    try {
+      await playVoiceBlob(state.voicePrerenderBlob);
+    } catch (error) {
+      setPresence('This iPhone could not start the voice. Press Play to try again.', 'resting');
+    }
     return;
+  }
+  if (!isIOSPlaybackDevice()) {
+    const context = ensureBatchAudio();
+    await context.resume();
+    if (state.voicePrerenderText === answerText && state.voicePrerenderGeneration === answerGeneration && state.voicePrerenderBlob?.size) {
+      await playVoiceBlob(state.voicePrerenderBlob);
+      return;
+    }
   }
   const requestId = globalThis.crypto?.randomUUID?.() || `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const startedAt = performance.now();
@@ -847,6 +936,16 @@ async function speakAnswer() {
       return;
     }
     activity('voice_prepare_completed', {request_id: requestId, bytes: Number(response.headers.get('content-length')) || 0, duration_ms: Math.round(performance.now() - startedAt), automatic: false, generation: answerGeneration});
+    if (isIOSPlaybackDevice()) {
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('The voice engine returned an empty audio file');
+      state.voicePrerenderText = answerText;
+      state.voicePrerenderGeneration = answerGeneration;
+      state.voicePrerenderBlob = blob;
+      setPresence('Voice is ready — press Play', 'resting');
+      activity('voice_ready_waiting_for_tap', {request_id: requestId, bytes: blob.size, ios: true});
+      return;
+    }
     await playVoiceFile(response);
   } catch (error) {
     activity('voice_prepare_failed', {request_id: requestId, error_name: error.name || 'Error', duration_ms: Math.round(performance.now() - startedAt), automatic: false});
@@ -889,7 +988,9 @@ function stopSpeaking() {
     state.audioBufferSource.disconnect();
     state.audioBufferSource = null;
   }
+  releaseNativeAudio();
   state.voicePlaying = false;
+  state.voicePlaybackMethod = '';
   window.clearTimeout(state.voicePlaybackTimer);
   state.voicePlaybackTimer = null;
   window.cancelAnimationFrame(state.audioAnimation);
@@ -952,6 +1053,9 @@ function updateRecordTime() {
 async function startRecording() {
   try {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('This browser cannot record audio');
+    // Invalidates any still-pending upload/retry from a prior recording so its
+    // eventual completion can't reset/clobber this new recording's live state.
+    state.recordSession += 1;
     state.mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     const candidates=isSafari?['audio/mp4','audio/webm;codecs=opus','audio/webm']:['audio/webm;codecs=opus','audio/webm','audio/mp4'];
@@ -978,7 +1082,7 @@ async function startRecording() {
     state.recordStartedAt=Date.now();
     state.recordTimer=setInterval(updateRecordTime,500); updateRecordTime(); startRecordVisualizer(state.mediaStream);
     byId('record-start').classList.add('active'); byId('record-start').querySelector('span:last-child').textContent='Recording';
-    byId('record-start').disabled=true; byId('record-pause').disabled=false; byId('record-stop').disabled=false;
+    byId('record-start').disabled=true; byId('record-pause').disabled=false; byId('record-stop').disabled=false; byId('record-retry').hidden=true;
     byId('recording-status').textContent='I am listening. Take your time.'; setPresence('Listening to your memory…','listening');
   } catch(error){byId('recording-status').textContent=error.message;}
 }
@@ -1014,19 +1118,55 @@ async function finalizeRecording(){
 }
 
 async function uploadRecording({unexpected=false}={}){
+  const recordSession=state.recordSession;
+  let response;
   try{
     if(!state.recordedChunks.length)throw new Error(state.recordError||'No sound was captured');
     const type=state.recordedChunks[0].type||state.mediaRecorder?.mimeType||'audio/webm'; const form=new FormData();
     form.append('file',new Blob(state.recordedChunks,{type}),type.includes('mp4')?'memory.m4a':'memory.webm');
     const title=byId('record-title').value.trim(); if(title)form.append('title',title);
     form.append('recording_mode',document.querySelector('input[name="record-mode"]:checked')?.value||'solo');
-    const response = await api('/api/recordings/upload',{method:'POST',body:form});
-    const sceneAtCompletion = document.body.dataset.scene || '';
-    activity('recording_upload_completed', {unexpected, session_id: response.session_id, scene_at_completion: sceneAtCompletion});
-    resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value='';
-    if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed');
+    response = await api('/api/recordings/upload',{method:'POST',body:form});
+  }catch(error){
+    // Only a failure of the upload itself means the memory was not saved.
+    // The captured audio must never be discarded here -- keep state.recordedChunks
+    // intact so "Try saving again" can retry the exact same upload without
+    // re-recording. Starting a fresh recording will naturally overwrite it.
+    console.error('[recording] save failed',error);
+    activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});
+    // A newer recording may have started while this (initial or retry) upload
+    // was in flight -- if so, its UI/media state belongs to that new
+    // recording now, and this stale failure must not touch or reset it.
+    if(state.recordSession!==recordSession)return;
+    byId('recording-status').textContent=`Your recording is still here on this device, but saving it failed: ${error.message}`;
+    resetRecorderAfterFailedUpload();
+    byId('record-retry').hidden=false;
+    return;
+  }
+  if(state.recordSession!==recordSession)return;
+  byId('record-retry').hidden=true;
+
+  // From here on, the recording is already durably saved on the server —
+  // any failure below is a UI-refresh hiccup, not a lost memory, and must
+  // not be reported as "not saved".
+  const sceneAtCompletion = document.body.dataset.scene || '';
+  activity('recording_upload_completed', {unexpected, session_id: response.session_id, scene_at_completion: sceneAtCompletion});
+  if(byId('record-seal').checked&&byId('record-seal-date').value){
+    const dateValue=byId('record-seal-date').value;
+    try{
+      await api(`/api/sessions/${encodeURIComponent(response.session_id)}/seal`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({unlock_at:new Date(`${dateValue}T00:00:00`).toISOString()})});
+      activity('memory_sealed',{unlock_year_month:dateValue.slice(0,7)});
+    }catch(error){/* the memory itself is still saved even if sealing fails */}
+  }
+  byId('record-seal').checked=false;byId('record-seal-date-field').hidden=true;byId('record-seal-date').value='';
+  resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value='';
+  if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed');
+  try{
     await Promise.all([refreshLibrary(),refreshMemoryQueue()]);
-  }catch(error){console.error('[recording] save failed',error);activity('recording_upload_failed',{unexpected,error_name:error.name||'Error'});byId('recording-status').textContent=`That memory was not saved. ${error.message}`;resetRecorder();}
+  }catch(error){
+    console.error('[recording] post-save refresh failed',error);
+    byId('library-status').textContent='Saved! Refreshing the list hit a snag — reopen Memories to see it.';
+  }
 }
 
 function resetRecorder(){
@@ -1034,6 +1174,27 @@ function resetRecorder(){
   state.recordStopRequested=false;state.recordFinalizing=false;state.recordError='';
   byId('record-start').disabled=false;byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
   byId('record-pause').disabled=true;byId('record-stop').disabled=true;byId('record-pause').textContent='Pause';byId('record-time').textContent='00:00';drawIdleWave();setPresence('Ready to talk','resting');
+}
+
+function resetRecorderAfterFailedUpload(){
+  clearInterval(state.recordTimer); cancelAnimationFrame(state.recordAnimation); releaseRecordingStream(); state.mediaRecorder=null;state.mediaStream=null;
+  state.recordStopRequested=false;state.recordFinalizing=false;
+  byId('record-start').disabled=false;byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
+  byId('record-pause').disabled=true;byId('record-stop').disabled=true;byId('record-pause').textContent='Pause';byId('record-time').textContent='00:00';drawIdleWave();setPresence('Ready to talk','resting');
+  // Deliberately does not clear state.recordedChunks/state.recordError: a
+  // failed upload must never discard the captured audio. retrySavingRecording()
+  // reuses it; starting a fresh recording overwrites it naturally.
+}
+
+async function retrySavingRecording(){
+  if(state.uploadInFlight)return; // guards against a double-tap firing two concurrent uploads
+  if(!state.recordedChunks.length){byId('recording-status').textContent='There is nothing captured to retry — please record again.';byId('record-retry').hidden=true;return;}
+  state.uploadInFlight=true;
+  byId('record-retry').hidden=true;
+  byId('record-start').disabled=true;
+  byId('recording-status').textContent='Trying to save your memory again…';
+  try{await uploadRecording({unexpected:false});}
+  finally{state.uploadInFlight=false;}
 }
 
 async function waitForJob(job, phase){
@@ -1286,21 +1447,220 @@ async function monitorMemoryBatch(job){
 
 function formatMemoryDate(sessionId){const match=sessionId.match(/^(\d{4})-(\d{2})-(\d{2})/);if(!match)return'';return new Date(`${match[1]}-${match[2]}-${match[3]}T12:00:00`).toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'});}
 
+function buildMemoryCard(session){
+  const button=document.createElement('button');button.type='button';button.className='memory-card';button.setAttribute('aria-label',`${session.title}. ${session.embedded?'Ready to answer questions':'Waiting for local preparation'}.`);
+  const date=document.createElement('small');date.textContent=formatMemoryDate(session.session_id);const title=document.createElement('h3');title.textContent=session.title;const status=document.createElement('div');status.className='memory-state';status.title=session.embedded?'Ready to answer questions':'Waiting for the local batch';
+  ['recorded','transcribed','embedded'].forEach((key)=>{const dot=document.createElement('span');dot.classList.toggle('ready',session[key]);status.append(dot)});button.append(date,title,status);button.addEventListener('click',()=>session.speaker_review_status==='needs_review'?openSpeakerReview(session.session_id):openMemory(session.session_id));
+  return button;
+}
+
+function filteredSessions(){
+  const query=byId('memory-search').value.trim().toLowerCase();
+  return state.sessions.filter((item)=>!query||item.title.toLowerCase().includes(query)||item.session_id.toLowerCase().includes(query));
+}
+
 function renderMemories(){
-  const query=byId('memory-search').value.trim().toLowerCase(); const sessions=state.sessions.filter((item)=>!query||item.title.toLowerCase().includes(query)||item.session_id.toLowerCase().includes(query));
-  const cards=sessions.map((session)=>{const button=document.createElement('button');button.type='button';button.className='memory-card';button.setAttribute('aria-label',`${session.title}. ${session.embedded?'Ready to answer questions':'Waiting for local preparation'}.`);
-    const date=document.createElement('small');date.textContent=formatMemoryDate(session.session_id);const title=document.createElement('h3');title.textContent=session.title;const status=document.createElement('div');status.className='memory-state';status.title=session.embedded?'Ready to answer questions':'Waiting for the local batch';
-    ['recorded','transcribed','embedded'].forEach((key)=>{const dot=document.createElement('span');dot.classList.toggle('ready',session[key]);status.append(dot)});button.append(date,title,status);button.addEventListener('click',()=>session.speaker_review_status==='needs_review'?openSpeakerReview(session.session_id):openMemory(session.session_id));return button;});
-  byId('memory-gallery').replaceChildren(...cards);byId('memory-summary').textContent=`${sessions.length} ${sessions.length===1?'memory':'memories'} in your story`;
+  const sessions=filteredSessions();
+  byId('memory-gallery').replaceChildren(...sessions.map(buildMemoryCard));
+  byId('memory-summary').textContent=`${sessions.length} ${sessions.length===1?'memory':'memories'} in your story`;
+}
+
+function renderMemoriesTimeline(){
+  const sessions=filteredSessions();
+  const byYear=new Map();
+  sessions.forEach((session)=>{
+    const year=session.session_id.slice(0,4);
+    if(!byYear.has(year))byYear.set(year,[]);
+    byYear.get(year).push(session);
+  });
+  const groups=[...byYear.keys()].sort((a,b)=>b.localeCompare(a)).map((year)=>{
+    const section=document.createElement('section');section.className='timeline-year';
+    const heading=document.createElement('h3');heading.textContent=year;section.append(heading);
+    const row=document.createElement('div');row.className='timeline-year-cards';row.append(...byYear.get(year).map(buildMemoryCard));section.append(row);
+    return section;
+  });
+  byId('memory-timeline').replaceChildren(...groups);
+  byId('memory-summary').textContent=`${sessions.length} ${sessions.length===1?'memory':'memories'} in your story`;
+}
+
+function renderActiveMemoriesView(){
+  if(state.memoriesView==='timeline'){byId('memory-gallery').hidden=true;byId('memory-timeline').hidden=false;renderMemoriesTimeline();}
+  else{byId('memory-timeline').hidden=true;byId('memory-gallery').hidden=false;renderMemories();}
+}
+
+function setMemoriesView(view){
+  state.memoriesView=view;
+  byId('memory-view-grid').setAttribute('aria-pressed',String(view==='grid'));
+  byId('memory-view-timeline').setAttribute('aria-pressed',String(view==='timeline'));
+  renderActiveMemoriesView();
+  activity('timeline_view_toggled',{view});
+}
+
+const TONE_BUCKETS=[
+  {key:'joyful',color:'var(--gold)',words:['joy','happy','warm','love','proud','grateful','delight','hope']},
+  {key:'difficult',color:'var(--coral)',words:['sad','loss','grief','hard','pain','fear','anger','regret','difficult']},
+  {key:'bittersweet',color:'var(--violet)',words:['bittersweet','mixed','complicated','nostalgi','wistful']},
+  {key:'calm',color:'var(--aqua)',words:['calm','peace','quiet','content','settled']},
+];
+
+function classifyTone(tone){
+  const text=(Array.isArray(tone)?tone.join(' '):String(tone||'')).toLowerCase();
+  if(!text.trim())return null;
+  for(const bucket of TONE_BUCKETS){if(bucket.words.some((word)=>text.includes(word)))return bucket;}
+  return {key:'neutral',color:'var(--muted)',words:[]};
+}
+
+function escapeXml(text){return String(text).replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));}
+
+function renderToneReflection(){
+  const panel=byId('tone-reflection');
+  const sessions=state.sessions.filter((session)=>session.recorded_at);
+  if(sessions.length<2){panel.hidden=true;return;}
+  const byMonth=new Map();
+  sessions.forEach((session)=>{
+    const bucket=classifyTone(session.emotional_tone);
+    if(!bucket)return;
+    const month=session.recorded_at.slice(0,7);
+    if(!byMonth.has(month))byMonth.set(month,[]);
+    byMonth.get(month).push({bucket,tone:session.emotional_tone,title:session.title});
+  });
+  const months=[...byMonth.keys()].sort();
+  if(!months.length){panel.hidden=true;return;}
+  const width=700,height=200,padding=30,topMargin=20;
+  // Scale row spacing to the busiest month so dots for a heavily-recorded
+  // month never run off the top of the fixed-height chart.
+  const maxEntries=Math.max(...months.map((month)=>byMonth.get(month).length));
+  const rowHeight=maxEntries>1?Math.min(16,(height-padding-topMargin)/(maxEntries-1)):16;
+  const colWidth=months.length>1?(width-padding*2)/(months.length-1):0;
+  const parts=[];
+  months.forEach((month,index)=>{
+    const x=months.length>1?padding+index*colWidth:width/2;
+    byMonth.get(month).forEach((entry,row)=>{
+      const y=height-padding-row*rowHeight;
+      const toneText=Array.isArray(entry.tone)?entry.tone.join(', '):String(entry.tone||'');
+      parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="${entry.bucket.color}"><title>${escapeXml(entry.title)}: ${escapeXml(toneText)}</title></circle>`);
+    });
+    parts.push(`<text x="${x.toFixed(1)}" y="${height-8}" font-size="11" fill="var(--muted)" text-anchor="middle">${escapeXml(month)}</text>`);
+  });
+  byId('tone-chart').innerHTML=parts.join('');
+  panel.hidden=false;
+  activity('tone_reflection_viewed',{months:months.length});
+}
+
+const RETURN_NUDGE_DISMISSED_KEY = 'here-i-am:nudge-dismissed-until';
+const RETURN_NUDGE_DAYS = 21;
+
+async function refreshSealedLetters(){
+  try{
+    const letters=await api('/api/sessions/sealed');
+    const banner=byId('sealed-letters');
+    if(!letters.length){banner.hidden=true;return;}
+    const soonest=letters.map((letter)=>letter.unlock_at).filter(Boolean).sort()[0];
+    byId('sealed-letters-title').textContent=`${letters.length} ${letters.length===1?'letter is':'letters are'} waiting to unlock`;
+    byId('sealed-letters-detail').textContent=soonest?`The next one opens ${new Date(soonest).toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'})}.`:'';
+    banner.hidden=false;
+    activity('sealed_letters_viewed',{count:letters.length});
+  }catch(error){byId('sealed-letters').hidden=true;}
+}
+
+async function refreshOnThisDay(){
+  try{
+    const matches=await api('/api/sessions/on-this-day');
+    const banner=byId('on-this-day');
+    if(!matches.length){banner.hidden=true;return false;}
+    const session=matches[0];
+    const years=new Date().getFullYear()-Number(session.session_id.slice(0,4));
+    byId('on-this-day-title').textContent=session.title;
+    byId('on-this-day-detail').textContent=`You recorded this ${years===1?'a year':`${years} years`} ago today — ${formatMemoryDate(session.session_id)}.`;
+    byId('on-this-day-open').onclick=()=>openMemory(session.session_id);
+    banner.hidden=false;
+    activity('on_this_day_shown',{count:matches.length});
+    return true;
+  }catch(error){byId('on-this-day').hidden=true;return false;}
+}
+
+async function refreshReturnNudge(showIfEligible){
+  const banner=byId('return-nudge');
+  if(!showIfEligible){banner.hidden=true;return;}
+  const dismissedUntil=localStorage.getItem(RETURN_NUDGE_DISMISSED_KEY);
+  if(dismissedUntil&&new Date(dismissedUntil)>new Date()){banner.hidden=true;return;}
+  try{
+    const result=await api('/api/sessions/gap');
+    const days=result.days_since_last_recording;
+    if(days===null||days===undefined||days<RETURN_NUDGE_DAYS){banner.hidden=true;return;}
+    // Re-check dismissal after the fetch: an overlapping call from a rapid
+    // double-navigation could otherwise re-show a banner the user just dismissed.
+    const dismissedNow=localStorage.getItem(RETURN_NUDGE_DISMISSED_KEY);
+    if(dismissedNow&&new Date(dismissedNow)>new Date()){banner.hidden=true;return;}
+    byId('return-nudge-title').textContent=`It's been ${days} days since your last recording.`;
+    banner.hidden=false;
+    activity('return_nudge_shown',{days_since_last_recording:days});
+  }catch(error){banner.hidden=true;}
+}
+
+async function refreshTalkBanners(){
+  const shownOnThisDay=await refreshOnThisDay();
+  await refreshReturnNudge(!shownOnThisDay);
+}
+
+async function refreshPromptOfTheDay(){
+  try{const result=await api('/api/prompts/today');byId('remember-prompt').textContent=result.prompt;activity('prompt_of_the_day_shown',{prompt_index:result.prompt.length});}
+  catch(error){byId('remember-prompt').textContent='';}
 }
 
 async function refreshLibrary(){
-  try{state.sessions=await api('/api/sessions');renderMemories();renderSpeakerReviewQueue();byId('library-status').textContent=state.sessions.length?'Choose any memory to read or change its words.':'Your first memory will appear here.';}
-  catch(error){byId('library-status').textContent=error.message;}
+  try{state.sessions=await api('/api/sessions');renderActiveMemoriesView();renderSpeakerReviewQueue();renderToneReflection();byId('library-status').textContent=state.sessions.length?'Choose any memory to read or change its words.':'Your first memory will appear here.';}
+  catch(error){
+    // Raw browser network errors (e.g. WebKit's "Load failed") do not mean
+    // anything was lost -- they mean this specific list request could not
+    // complete. Say that plainly instead of surfacing the raw error text.
+    console.error('[library] refresh failed',error);
+    byId('library-status').textContent='Your memories are safe, but this list could not load right now. Reopen Memories to try again.';
+  }
+}
+
+async function openQuiz(){
+  const dialog=byId('quiz-dialog');
+  state.activeQuizPrompt=null; // discard any prior round immediately so a reveal mid-fetch can't show stale data
+  byId('quiz-title').textContent='';byId('quiz-quote').hidden=true;byId('quiz-quote').textContent='';
+  byId('quiz-reveal').hidden=false;byId('quiz-reveal').disabled=true;byId('quiz-next').hidden=true;byId('quiz-status').textContent='Finding a memory…';
+  if(!dialog.open)dialog.showModal();
+  try{
+    const result=await api('/api/quiz/prompt');
+    if(!result){byId('quiz-status').textContent='No memories are ready to quiz yet.';byId('quiz-reveal').hidden=true;return;}
+    state.activeQuizPrompt=result;
+    byId('quiz-title').textContent=`Do you remember what you said about ${result.topic_hint}?`;
+    byId('quiz-status').textContent='';
+    byId('quiz-reveal').disabled=false;
+    activity('quiz_shown',{session_id:result.session_id});
+  }catch(error){byId('quiz-status').textContent=error.message;byId('quiz-reveal').hidden=true;}
+}
+
+function revealQuiz(){
+  if(!state.activeQuizPrompt)return;
+  byId('quiz-quote').textContent=state.activeQuizPrompt.quote;byId('quiz-quote').hidden=false;
+  byId('quiz-reveal').hidden=true;byId('quiz-next').hidden=false;
+  activity('quiz_revealed',{session_id:state.activeQuizPrompt.session_id});
+}
+
+function renderRelatedMemories(sessionId,sources){
+  if(state.activeSessionId!==sessionId)return; // a different memory is open now; this response is stale
+  const section=byId('related-memories');
+  if(!sources||!sources.length){section.hidden=true;return;}
+  const links=sources.map((source)=>{
+    const button=document.createElement('button');button.type='button';button.className='text-button';
+    button.textContent=`${source.title} (${formatMemoryDate(source.session_id)})`;
+    button.addEventListener('click',()=>{byId('memory-dialog').close();openMemory(source.session_id);});
+    return button;
+  });
+  byId('related-memories-list').replaceChildren(...links);
+  section.hidden=false;
+  activity('related_memories_shown',{count:sources.length});
 }
 
 async function openMemory(sessionId){
-  try{const session=await api(`/api/sessions/${encodeURIComponent(sessionId)}`);state.activeSessionId=sessionId;const conversation=session.recording_mode==='conversation';byId('memory-dialog-title').textContent=session.title;byId('memory-meta').textContent=`${formatMemoryDate(sessionId)} · ${conversation?'Voice-labeled conversation · ':''}${session.embedded?'Ready for questions':'Waiting for the local batch'}`;byId('memory-transcript').value=session.transcript||'';byId('memory-transcript').disabled=!session.transcript||conversation;byId('memory-save').disabled=!session.transcript||conversation;byId('memory-export').href=`/api/sessions/${encodeURIComponent(sessionId)}/export`;byId('memory-dialog-status').textContent=conversation?'The labels preserve which words belong to the memory subject. Take a copy to review the full conversation.':session.transcript?'Every save keeps the earlier version safe.':'The words will appear after the local batch.';byId('memory-dialog').showModal();}
+  try{const session=await api(`/api/sessions/${encodeURIComponent(sessionId)}`);state.activeSessionId=sessionId;const conversation=session.recording_mode==='conversation';byId('memory-dialog-title').textContent=session.title;byId('memory-meta').textContent=`${formatMemoryDate(sessionId)} · ${conversation?'Voice-labeled conversation · ':''}${session.embedded?'Ready for questions':'Waiting for the local batch'}`;byId('memory-transcript').value=session.transcript||'';byId('memory-transcript').disabled=!session.transcript||conversation;byId('memory-save').disabled=!session.transcript||conversation;byId('memory-export').href=`/api/sessions/${encodeURIComponent(sessionId)}/export`;byId('memory-dialog-status').textContent=conversation?'The labels preserve which words belong to the memory subject. Take a copy to review the full conversation.':session.transcript?'Every save keeps the earlier version safe.':'The words will appear after the local batch.';byId('related-memories').hidden=true;byId('memory-dialog').showModal();
+  api(`/api/sessions/${encodeURIComponent(sessionId)}/related`).then((sources)=>renderRelatedMemories(sessionId,sources)).catch(()=>{});}
   catch(error){byId('library-status').textContent=error.message;}
 }
 
@@ -1360,10 +1720,14 @@ function bindEvents(){
   byId('text-size-button').addEventListener('click',async()=>{const order=['standard','large','largest'];state.preferences.text_scale=order[(order.indexOf(state.preferences.text_scale)+1)%order.length];applyPreferences();await api('/api/experience',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:state.preferences})});});
   byId('settings-save').addEventListener('click',()=>saveSettings());byId('setting-provider').addEventListener('change',saveProviderSelection);byId('avatar-save').addEventListener('click',saveAvatar);
   byId('chat-form').addEventListener('submit',(event)=>{event.preventDefault();askQuestion(byId('chat-question').value)});byId('chat-question').addEventListener('input',growQuestionBox);byId('chat-question').addEventListener('keydown',(event)=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();askQuestion(event.currentTarget.value)}});
-  document.querySelectorAll('#suggestions button').forEach((button)=>button.addEventListener('click',()=>askQuestion(button.textContent)));
+  document.querySelectorAll('#suggestions button:not(#quiz-open)').forEach((button)=>button.addEventListener('click',()=>askQuestion(button.textContent)));
+  byId('quiz-open').addEventListener('click',openQuiz);byId('quiz-close').addEventListener('click',()=>byId('quiz-dialog').close());byId('quiz-reveal').addEventListener('click',revealQuiz);byId('quiz-next').addEventListener('click',openQuiz);
   byId('voice-question').addEventListener('click',()=>state.speechRecognition?.start());byId('speak-answer').addEventListener('click',speakAnswer);byId('stop-speaking').addEventListener('click',stopSpeaking);byId('compare-answer').addEventListener('click',compareAnswers);byId('feedback-up').addEventListener('click',()=>sendFeedback('up'));byId('clear-answer').addEventListener('click',clearAnswer);
   byId('record-start').addEventListener('click',startRecording);byId('record-pause').addEventListener('click',pauseRecording);byId('record-stop').addEventListener('click',stopRecording);
-  byId('memory-search').addEventListener('input',renderMemories);byId('memory-save').addEventListener('click',saveMemory);
+  byId('record-seal').addEventListener('change',(event)=>{byId('record-seal-date-field').hidden=!event.currentTarget.checked;});
+  byId('record-retry').addEventListener('click',retrySavingRecording);
+  byId('memory-search').addEventListener('input',renderActiveMemoriesView);byId('memory-save').addEventListener('click',saveMemory);
+  byId('memory-view-grid').addEventListener('click',()=>setMemoriesView('grid'));byId('memory-view-timeline').addEventListener('click',()=>setMemoriesView('timeline'));
   setupMemoryImport();
   byId('speaker-review-close').addEventListener('click',()=>byId('speaker-review-dialog').close());byId('speaker-review-save').addEventListener('click',saveSpeakerReview);
   byId('speaker-avatar-close').addEventListener('click',()=>byId('speaker-avatar-dialog').close());byId('speaker-avatar-upload').addEventListener('change',(event)=>uploadSpeakerImage(event.currentTarget,'avatar'));byId('speaker-photo-upload').addEventListener('change',(event)=>uploadSpeakerImage(event.currentTarget,'photo'));byId('speaker-photo-consent').addEventListener('change',()=>{const speaker=state.speakers.find((item)=>item.speaker_id===state.activeSpeakerId);byId('speaker-avatar-generate').disabled=!(speaker?.source_photo_ready&&byId('speaker-photo-consent').checked);});byId('speaker-avatar-generate').addEventListener('click',startAvatarGeneration);
@@ -1374,10 +1738,16 @@ function bindEvents(){
   byId('login-form').addEventListener('submit', submitLogin);
   byId('login-dialog').addEventListener('cancel', (event) => event.preventDefault());
   document.addEventListener('here-i-am:auth-required', showLoginDialog);
+  byId('return-nudge-dismiss').addEventListener('click', () => {
+    const until = new Date(); until.setHours(23, 59, 59, 999);
+    localStorage.setItem(RETURN_NUDGE_DISMISSED_KEY, until.toISOString());
+    byId('return-nudge').hidden = true;
+    activity('return_nudge_dismissed', {});
+  });
 }
 
 async function bootApp(){
-  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers(),loadBuildVersion()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
+  try{await loadExperience();const restoredAnswer=restoreCompletedAnswer();await Promise.all([refreshLibrary(),loadVoiceStatus(),refreshMemoryQueue(),refreshSpeakers(),loadBuildVersion(),refreshTalkBanners()]);state.batchPollTimer=window.setInterval(refreshMemoryQueue,10000);if(!state.batchWatching)setPresence(restoredAnswer?'Previous answer restored':'Ready to talk','resting');activity('app_loaded',{restored_answer:restoredAnswer,auto_speak:Boolean(state.preferences.auto_speak),pre_render_voice:Boolean(state.preferences.pre_render_voice)});}
   catch(error){activity('app_load_failed',{error_name:error.name||'Error'});setPresence(`Needs attention: ${error.message}`,'resting');}
 }
 

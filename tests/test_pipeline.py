@@ -1,15 +1,20 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 from services.pipeline import (
+    active_chroma_filter,
+    active_index_versions,
     build_chunk_records,
     build_conversation_chunk_records,
     build_reindex_records,
-    active_chroma_filter,
     content_version_for,
+    lexical_personal_context,
     metadata_prompt,
     normalize_chroma_value,
     query_context_with_distances,
     record_is_active,
+    related_sessions,
+    sample_quiz_prompt,
     semantic_chunks,
     subject_evidence_only,
 )
@@ -159,3 +164,127 @@ def test_conversation_reindex_uses_confirmed_subject_units_not_full_transcript()
     assert all(record['metadata']['evidence_role'] == 'memory_subject' for record in records)
     assert all('**Interviewer:**' not in record['text'] for record in records)
     assert 'I grew up in New York.' in records[0]['text']
+
+
+def test_active_index_versions_excludes_future_unlock_at():
+    _, session = create_session_dir('Sealed manifest test')
+    update_processing_state(session, embedded=True, active_content_version='v1')
+    assert active_index_versions().get(session.name) == 'v1'
+
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    update_processing_state(session, unlock_at=future)
+    assert session.name not in active_index_versions()
+
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    update_processing_state(session, unlock_at=past)
+    assert active_index_versions().get(session.name) == 'v1'
+
+
+def test_active_index_versions_fails_open_on_malformed_unlock_at():
+    _, session = create_session_dir('Malformed unlock test')
+    update_processing_state(session, embedded=True, active_content_version='v1', unlock_at='not-a-real-date')
+    assert active_index_versions().get(session.name) == 'v1'
+
+
+def test_query_context_and_lexical_context_both_exclude_sealed_session(monkeypatch):
+    _, unsealed = create_session_dir('Retrieval unsealed test')
+    update_processing_state(unsealed, embedded=True, active_content_version='v1')
+    _, sealed = create_session_dir('Retrieval sealed test')
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    update_processing_state(sealed, embedded=True, active_content_version='v1', unlock_at=future)
+
+    class Collection:
+        def count(self):
+            return 2
+
+        def query(self, **kwargs):
+            documents = ['a distinctive shared phrase, unsealed copy', 'a distinctive shared phrase, sealed copy']
+            metadatas = [
+                {'session_id': unsealed.name, 'chunk_index': 0, 'content_version': 'v1', 'title': 'Unsealed'},
+                {'session_id': sealed.name, 'chunk_index': 0, 'content_version': 'v1', 'title': 'Sealed'},
+            ]
+            distances = [0.1, 0.1]
+            return {'documents': [documents], 'metadatas': [metadatas], 'distances': [distances]}
+
+    monkeypatch.setattr('services.pipeline.chroma_collection', lambda: Collection())
+    _docs, metas, _distances = query_context_with_distances('a distinctive shared phrase', n_results=4)
+    assert all(meta['session_id'] != sealed.name for meta in metas)
+    assert any(meta['session_id'] == unsealed.name for meta in metas)
+
+    for session, name in ((unsealed, 'unsealed'), (sealed, 'sealed')):
+        session_paths(session)['chunks'].write_text(json.dumps({
+            'id': f'{session.name}::chunk::0000',
+            'text': f'Memory subject evidence: my wife and I planted a garden together ({name} copy).',
+            'metadata': {'session_id': session.name, 'chunk_index': 0, 'content_version': 'v1', 'title': name},
+        }) + '\n', encoding='utf-8')
+
+    _lex_docs, lex_metas, _lex_distances = lexical_personal_context('Tell me about my wife')
+    assert all(meta['session_id'] != sealed.name for meta in lex_metas)
+
+
+def test_related_sessions_excludes_self_and_sealed(monkeypatch):
+    _, target = create_session_dir('Related target test')
+    update_processing_state(target, embedded=True, active_content_version='v1')
+    save_json(session_paths(target)['metadata'], {'title': 'Target', 'summary': 'A shared memory about the lake house'})
+
+    _, other = create_session_dir('Related other test')
+    update_processing_state(other, embedded=True, active_content_version='v1')
+
+    _, sealed = create_session_dir('Related sealed test')
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    update_processing_state(sealed, embedded=True, active_content_version='v1', unlock_at=future)
+
+    class Collection:
+        def count(self):
+            return 3
+
+        def query(self, **kwargs):
+            documents = ['lake house memory target', 'lake house memory other', 'lake house memory sealed']
+            metadatas = [
+                {'session_id': target.name, 'chunk_index': 0, 'content_version': 'v1', 'title': 'Target'},
+                {'session_id': other.name, 'chunk_index': 0, 'content_version': 'v1', 'title': 'Other'},
+                {'session_id': sealed.name, 'chunk_index': 0, 'content_version': 'v1', 'title': 'Sealed'},
+            ]
+            distances = [0.05, 0.2, 0.05]
+            return {'documents': [documents], 'metadatas': [metadatas], 'distances': [distances]}
+
+    monkeypatch.setattr('services.pipeline.chroma_collection', lambda: Collection())
+    results = related_sessions(target.name, limit=3)
+    session_ids = {source.session_id for source in results}
+    assert target.name not in session_ids
+    assert sealed.name not in session_ids
+    assert other.name in session_ids
+
+
+def test_sample_quiz_prompt_only_uses_active_sessions_and_strips_evidence_prefix():
+    _, sealed = create_session_dir('Quiz sealed test')
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    update_processing_state(sealed, embedded=True, active_content_version='v1', unlock_at=future)
+    session_paths(sealed)['chunks'].write_text(json.dumps({
+        'id': 'sealed::chunk::0000',
+        'text': 'Memory subject evidence: This secret must never be quizzed before the unlock date.',
+        'metadata': {'session_id': sealed.name, 'chunk_index': 0, 'content_version': 'v1', 'topics': 'secret'},
+    }) + '\n', encoding='utf-8')
+
+    _, active = create_session_dir('Quiz active test')
+    update_processing_state(active, embedded=True, active_content_version='v1')
+    session_paths(active)['chunks'].write_text(json.dumps({
+        'id': 'active::chunk::0000',
+        'text': "Memory subject evidence: I learned to swim at my grandmother's lake house.",
+        'metadata': {'session_id': active.name, 'chunk_index': 0, 'content_version': 'v1', 'topics': 'swimming'},
+    }) + '\n', encoding='utf-8')
+
+    seen_sessions = set()
+    for _ in range(20):
+        result = sample_quiz_prompt()
+        assert result is not None
+        assert result.session_id != sealed.name
+        assert 'Memory subject evidence' not in result.quote
+        seen_sessions.add(result.session_id)
+    assert active.name in seen_sessions
+
+
+def test_active_index_versions_treats_non_string_unlock_at_as_unlocked():
+    _, session = create_session_dir('Non-string unlock manifest test')
+    update_processing_state(session, embedded=True, active_content_version='v1', unlock_at=12345)
+    assert active_index_versions().get(session.name) == 'v1'
