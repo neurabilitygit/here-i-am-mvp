@@ -33,6 +33,25 @@ def test_native_bridges_are_detached_and_read_the_protected_token():
     assert '"$VOICE_ENV/bin/python" -m uvicorn' in runner
 
 
+def test_production_launcher_connects_private_iphone_access_automatically():
+    root = Path(__file__).parents[1]
+    launcher = (root / 'scripts' / 'start.sh').read_text(encoding='utf-8')
+    connector = (root / 'scripts' / 'start_tailscale.sh').read_text(encoding='utf-8')
+    publisher = (root / 'scripts' / 'enable_tailscale.sh').read_text(encoding='utf-8')
+
+    assert 'HERE_I_AM_ENABLE_TAILSCALE' in launcher
+    assert 'scripts/start_tailscale.sh' in launcher
+    assert 'scripts/enable_tailscale.sh' in launcher
+    assert 'CORS_ORIGINS="$(append_csv_value' in launcher
+    assert 'TRUSTED_HOSTS="$(append_csv_value' in launcher
+    assert "APP_URL='http://127.0.0.1:8787'" in launcher
+    assert 'tailscale up >&2 &' in connector
+    assert 'for _ in $(seq 1 60)' in connector
+    assert 'tailscale up --reset' not in connector
+    assert 'BackendState' in connector
+    assert 'tailscale serve --bg "$LOCAL_APP_URL"' in publisher
+
+
 def test_voice_environment_is_built_at_its_final_absolute_path():
     root = Path(__file__).parents[1]
     launcher = (root / 'scripts' / 'start_voice.sh').read_text(encoding='utf-8')

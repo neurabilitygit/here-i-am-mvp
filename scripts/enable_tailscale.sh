@@ -1,16 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRET_DIR="${HERE_I_AM_SECRET_DIR:-/Users/ericbass/Library/Application Support/Here-I-Am/secrets}"
 LOCAL_APP_URL="http://127.0.0.1:8787"
 
 command -v tailscale >/dev/null 2>&1 || {
   echo 'tailscale CLI not found. Install Tailscale first: https://tailscale.com/download' >&2
-  exit 1
-}
-
-tailscale status >/dev/null 2>&1 || {
-  echo 'Tailscale is not logged in. Run `tailscale up` first.' >&2
   exit 1
 }
 
@@ -24,7 +20,10 @@ curl -fsS --max-time 2 "$LOCAL_APP_URL/api/health" >/dev/null 2>&1 || {
   exit 1
 }
 
-DNS_NAME="$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+DNS_NAME="${TAILSCALE_DNS_NAME:-}"
+if [[ -z "$DNS_NAME" ]]; then
+  DNS_NAME="$("$SCRIPT_DIR/start_tailscale.sh")"
+fi
 [[ -n "$DNS_NAME" ]] || {
   echo 'Could not determine this device'"'"'s tailnet hostname.' >&2
   exit 1
@@ -41,13 +40,9 @@ fi
 
 cat <<EOF
 
-Here I Am should now be reachable at:
+Here I Am is reachable from devices signed into your tailnet at:
   https://$DNS_NAME
 
-Before it works from other devices, add this hostname to .env and restart:
-  CORS_ORIGINS=http://localhost:8787,http://127.0.0.1:8787,https://$DNS_NAME
-  TRUSTED_HOSTS=localhost,127.0.0.1,testserver,host.docker.internal,$DNS_NAME
-
-Then run ./scripts/start.sh again to pick up the change, and open the URL
-above on your phone. Log in with the passphrase set via set_passphrase.py.
+Open that URL on your iPhone while Tailscale is connected, then log in with
+the Here I Am passphrase. Docker remains bound to this Mac's loopback address.
 EOF
