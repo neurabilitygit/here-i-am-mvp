@@ -49,7 +49,9 @@ class Settings(BaseSettings):
     cloud_store_responses: bool = False
     voice_provider: str = 'disabled'
     voice_bridge_url: str = 'http://host.docker.internal:8779'
-    local_bridge_token: str = 'here-i-am-local-v1'
+    # The production launcher creates a random host-local token. An empty
+    # default deliberately makes direct, unconfigured bridge mutations fail.
+    local_bridge_token: str = ''
     auth_passphrase_hash_file: str = ''
     auth_tokens_path: str = '/data/appdata/auth_tokens.json'
     auth_token_ttl_seconds: int = 2_592_000

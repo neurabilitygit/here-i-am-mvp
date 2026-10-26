@@ -14,6 +14,7 @@ class RecordingUploadResponse(BaseModel):
     session_id: str
     message: str
     recording_mode: Literal['solo', 'conversation'] = 'solo'
+    status: Literal['ready', 'needs_attention'] = 'ready'
 
 
 class JobProgress(BaseModel):
@@ -155,6 +156,8 @@ class SessionSummary(BaseModel):
     notable_events: list[str] = Field(default_factory=list)
     sealed: bool = False
     unlock_at: str | None = None
+    upload_status: str = 'ready'
+    upload_error: str = ''
 
 
 class SessionDetail(SessionSummary):
@@ -180,6 +183,7 @@ class SpeakerProfile(BaseModel):
     avatar_url: str | None = None
     voice_reference_ready: bool = False
     source_photo_ready: bool = False
+    voice_matching_consented: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -189,6 +193,7 @@ class SpeakerAssignment(BaseModel):
     speaker_id: str | None = Field(default=None, max_length=100)
     display_name: str | None = Field(default=None, max_length=80)
     role: Literal['memory_subject', 'interviewer', 'other']
+    retain_voice_reference: bool = False
 
 
 class SpeakerAssignmentsUpdate(BaseModel):
@@ -322,6 +327,7 @@ class VoiceStatus(BaseModel):
     voice_id: str = ''
     cloud_deletion_pending: bool = False
     cloud_deletion_error: str = ''
+    bridge_deletion_pending: bool = False
 
 
 class VoicePrepareRequest(BaseModel):

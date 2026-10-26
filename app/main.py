@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import time
@@ -14,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -29,14 +30,14 @@ from models.schemas import AnswerFeedback, AuthLoginRequest, AuthStatus, AvatarG
 from services.prompts import prompt_of_the_day
 from services.auth import SESSION_COOKIE_NAME, is_locked_out, issue_token, passphrase_configured, register_failure, register_success, requires_auth, revoke_token, validate_token, verify_passphrase
 from services.jobs import JobConflictError, job_manager
-from services.library import build_session_export, create_structured_backup, days_since_last_recording, get_session, is_sealed, list_sessions, on_this_day_sessions, reconciliation_report, sealed_sessions
+from services.library import build_session_export, create_structured_backup, days_since_last_recording, get_session, is_sealed, list_sessions, on_this_day_sessions, reconciliation_report, search_sessions, sealed_sessions
 from services.ollama_client import ollama_client
 from services.fidelity import build_speaker_fingerprint, load_speaker_fingerprint, save_answer_feedback
-from services.pipeline import analyze_unprocessed, answer_question, benchmark_question, memory_queue_status, prepare_answer, process_memory_batch, reindex_to_migration_collection, related_sessions, sample_quiz_prompt, stream_prepared_answer, transcribe_unprocessed
+from services.pipeline import analyze_unprocessed, answer_question, benchmark_question, ground_personal_answer, memory_queue_status, prepare_answer, process_memory_batch, reindex_to_migration_collection, related_sessions, sample_quiz_prompt, stream_prepared_answer, transcribe_unprocessed
 from services.preferences import cloud_api_key, load_preferences, public_preferences, save_preferences, set_runtime_cloud_key
 from services.providers import active_provider, provider_status, public_provider_error, record_generation_failure, record_stream_audit, transition_provider, validate_provider_selection
-from services.storage import archive_session, create_session_dir, ensure_directories, list_session_dirs, revise_transcript, safe_session_dir, seal_until, session_lock, session_paths, update_processing_state
-from services.speakers import SpeakerWorkflowError, apply_speaker_assignments, create_speaker, list_speakers, speaker_review, speaker_sample
+from services.storage import LibraryBusyError, archive_session, create_session_dir, ensure_directories, library_write_lock, list_session_dirs, revise_transcript, safe_session_dir, seal_until, session_lock, session_paths, update_processing_state
+from services.speakers import SpeakerWorkflowError, apply_speaker_assignments, create_speaker, list_speakers, revise_conversation_transcript, revoke_speaker_voice_reference, speaker_review, speaker_sample
 from services.avatars import AvatarWorkflowError, active_avatar_path, generate_avatar, store_speaker_image, validate_avatar_generation
 from services.voice import LOCAL_BRIDGE_HEADERS, cancel_synthesis_stream, list_voice_candidates, load_voice_status, prepare_voice_reference, public_voice_error, revoke_voice, synthesize
 from services.activity import recent_activity, record_activity
@@ -75,10 +76,27 @@ app.add_middleware(
 )
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger('here_i_am')
+_chat_stream_lock = threading.Lock()
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / 'templates'))
 app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'static')), name='static')
+
+
+def protected_library_mutation():
+    try:
+        with library_write_lock(blocking=False):
+            yield
+    except LibraryBusyError as exc:
+        raise HTTPException(
+            status_code=423,
+            detail='The memory library is making a protected safety copy or update. Try again shortly.',
+        ) from exc
+
+
+def run_protected_library_job(target) -> None:
+    with library_write_lock():
+        target()
 
 
 @app.middleware('http')
@@ -295,11 +313,18 @@ async def upload_recording(
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
     recording_mode: str = Form(default='solo'),
+    confirm_conversation_cloud: bool = Form(default=False),
+    _library_guard: None = Depends(protected_library_mutation),
 ):
     if title and len(title.strip()) > 160:
         raise HTTPException(status_code=422, detail='Recording title is too long')
     if recording_mode not in {'solo', 'conversation'}:
         raise HTTPException(status_code=422, detail='Recording mode must be solo or conversation')
+    if recording_mode == 'conversation' and not confirm_conversation_cloud:
+        raise HTTPException(
+            status_code=422,
+            detail='Confirm permission to send this conversation for cloud speaker recognition',
+        )
     session_id, session_dir = create_session_dir(title=title)
     source_path = session_paths(session_dir)['source_audio']
     update_processing_state(
@@ -309,6 +334,10 @@ async def upload_recording(
         original_content_type=file.content_type or '',
         speaker_processing_status='pending' if recording_mode == 'conversation' else 'not_required',
         speaker_review_status='pending' if recording_mode == 'conversation' else 'not_required',
+        conversation_cloud_consented=recording_mode == 'conversation',
+        conversation_cloud_consented_at=datetime.now(timezone.utc).isoformat() if recording_mode == 'conversation' else None,
+        conversation_cloud_disclosure_version='1.0' if recording_mode == 'conversation' else None,
+        upload_status='receiving',
     )
     total = 0
     try:
@@ -318,9 +347,18 @@ async def upload_recording(
                 if total > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail='Recording exceeds the configured upload limit')
                 buffer.write(chunk)
+            buffer.flush()
+            os.fsync(buffer.fileno())
+        directory_fd = os.open(session_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except Exception:
         shutil.rmtree(session_dir, ignore_errors=True)
         raise
+
+    update_processing_state(session_dir, upload_status='validating', source_bytes=total)
 
     flac_path = session_dir / 'recording.flac'
     command = [
@@ -335,17 +373,25 @@ async def upload_recording(
             timeout=900,
         )
     except subprocess.TimeoutExpired as exc:
-        shutil.rmtree(session_dir, ignore_errors=True)
-        raise HTTPException(status_code=408, detail='The uploaded recording took too long to validate') from exc
+        flac_path.unlink(missing_ok=True)
+        update_processing_state(session_dir, upload_status='validation_failed', upload_error='conversion_timeout')
+        logger.warning('recording validation timed out session=%s exception=%s', session_id, type(exc).__name__)
+        return RecordingUploadResponse(
+            session_id=session_id,
+            message='Recording saved safely, but it needs another validation attempt from Memories.',
+            recording_mode=recording_mode,
+            status='needs_attention',
+        )
     if completed.returncode != 0 or not flac_path.exists():
-        source_path.unlink(missing_ok=True)
-        try:
-            flac_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        shutil.rmtree(session_dir, ignore_errors=True)
+        flac_path.unlink(missing_ok=True)
+        update_processing_state(session_dir, upload_status='validation_failed', upload_error='conversion_failed')
         logger.error('ffmpeg conversion failed for session=%s: %s', session_id, completed.stderr[-2000:])
-        raise HTTPException(status_code=422, detail='The uploaded file could not be converted to audio')
+        return RecordingUploadResponse(
+            session_id=session_id,
+            message='Recording saved safely, but it could not yet be prepared. Retry from Memories.',
+            recording_mode=recording_mode,
+            status='needs_attention',
+        )
     probe = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', str(flac_path)]
     try:
         duration_result = await run_in_threadpool(
@@ -357,12 +403,31 @@ async def upload_recording(
         )
         duration = float(json.loads(duration_result.stdout)['format']['duration'])
     except (subprocess.TimeoutExpired, KeyError, ValueError, json.JSONDecodeError) as exc:
-        shutil.rmtree(session_dir, ignore_errors=True)
-        raise HTTPException(status_code=422, detail='The uploaded audio duration could not be verified') from exc
+        flac_path.unlink(missing_ok=True)
+        update_processing_state(session_dir, upload_status='validation_failed', upload_error='duration_unverified')
+        logger.warning('recording duration probe failed session=%s exception=%s', session_id, type(exc).__name__)
+        return RecordingUploadResponse(
+            session_id=session_id,
+            message='Recording saved safely, but its duration could not yet be verified. Retry from Memories.',
+            recording_mode=recording_mode,
+            status='needs_attention',
+        )
     if duration <= 0 or duration > settings.max_upload_seconds:
-        shutil.rmtree(session_dir, ignore_errors=True)
-        raise HTTPException(status_code=413, detail='The recording duration exceeds the configured limit')
-    update_processing_state(session_dir, duration_seconds=round(duration, 3), source_bytes=total)
+        flac_path.unlink(missing_ok=True)
+        update_processing_state(session_dir, upload_status='validation_failed', upload_error='duration_out_of_range')
+        return RecordingUploadResponse(
+            session_id=session_id,
+            message='Recording saved safely, but its duration is outside the configured processing limit.',
+            recording_mode=recording_mode,
+            status='needs_attention',
+        )
+    update_processing_state(
+        session_dir,
+        upload_status='ready',
+        upload_error='',
+        duration_seconds=round(duration, 3),
+        source_bytes=total,
+    )
     return RecordingUploadResponse(
         session_id=session_id,
         message=(
@@ -374,13 +439,89 @@ async def upload_recording(
     )
 
 
+def _retry_recording_validation(session_id: str) -> dict:
+    session = safe_session_dir(session_id)
+    if not session.exists():
+        raise FileNotFoundError('Session does not exist')
+    paths = session_paths(session)
+    if not paths['source_audio'].exists():
+        raise FileNotFoundError('The original recording is missing')
+    with session_lock(session_id):
+        update_processing_state(session, upload_status='validating', upload_error='')
+        completed = subprocess.run(
+            [
+                'ffmpeg', '-y', '-i', str(paths['source_audio']), '-vn', '-ac', '1', '-ar', '16000',
+                '-c:a', 'flac', str(paths['audio']),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if completed.returncode != 0 or not paths['audio'].exists():
+            paths['audio'].unlink(missing_ok=True)
+            update_processing_state(session, upload_status='validation_failed', upload_error='conversion_failed')
+            raise ValueError('The saved original still could not be prepared as audio')
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', str(paths['audio'])],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        try:
+            duration = float(json.loads(probe.stdout)['format']['duration'])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            paths['audio'].unlink(missing_ok=True)
+            update_processing_state(session, upload_status='validation_failed', upload_error='duration_unverified')
+            raise ValueError('The saved original duration still could not be verified') from exc
+        if duration <= 0 or duration > settings.max_upload_seconds:
+            paths['audio'].unlink(missing_ok=True)
+            update_processing_state(session, upload_status='validation_failed', upload_error='duration_out_of_range')
+            raise ValueError('The recording duration is outside the configured processing limit')
+        update_processing_state(
+            session,
+            upload_status='ready',
+            upload_error='',
+            duration_seconds=round(duration, 3),
+            source_bytes=paths['source_audio'].stat().st_size,
+        )
+    return {'status': 'ready', 'session_id': session_id, 'duration_seconds': round(duration, 3)}
+
+
+@app.post('/api/sessions/{session_id}/recording/retry')
+async def retry_recording_validation(
+    session_id: str,
+    _library_guard: None = Depends(protected_library_mutation),
+):
+    try:
+        return await run_in_threadpool(_retry_recording_validation, session_id)
+    except subprocess.TimeoutExpired as exc:
+        session = safe_session_dir(session_id)
+        update_processing_state(session, upload_status='validation_failed', upload_error='conversion_timeout')
+        raise HTTPException(status_code=408, detail='Validation took too long; the original remains safe') from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get('/api/speakers', response_model=list[SpeakerProfile])
 def get_speakers():
     return list_speakers()
 
 
+@app.post('/api/speakers/{speaker_id}/voice-reference/revoke', response_model=SpeakerProfile)
+def revoke_speaker_reference(
+    speaker_id: str,
+    _library_guard: None = Depends(protected_library_mutation),
+):
+    try:
+        return revoke_speaker_voice_reference(speaker_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail='Speaker does not exist') from exc
+
+
 @app.post('/api/speakers', response_model=SpeakerProfile)
-def post_speaker(payload: SpeakerCreate):
+def post_speaker(payload: SpeakerCreate, _library_guard: None = Depends(protected_library_mutation)):
     return create_speaker(payload)
 
 
@@ -396,7 +537,11 @@ def get_speaker_review(session_id: str):
 
 
 @app.put('/api/sessions/{session_id}/speaker-assignments')
-async def put_speaker_assignments(session_id: str, payload: SpeakerAssignmentsUpdate):
+async def put_speaker_assignments(
+    session_id: str,
+    payload: SpeakerAssignmentsUpdate,
+    _library_guard: None = Depends(protected_library_mutation),
+):
     session_dir = safe_session_dir(session_id)
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail='Session does not exist')
@@ -429,6 +574,7 @@ async def upload_speaker_avatar(
     speaker_id: str,
     file: UploadFile = File(...),
     kind: str = Form(default='avatar'),
+    _library_guard: None = Depends(protected_library_mutation),
 ):
     if kind not in {'avatar', 'photo'}:
         raise HTTPException(status_code=422, detail='Choose avatar or photo')
@@ -461,7 +607,11 @@ async def upload_speaker_avatar(
 
 
 @app.post('/api/speakers/{speaker_id}/avatar/generate', response_model=AvatarJobResponse)
-def generate_speaker_avatar(speaker_id: str, payload: AvatarGenerationRequest):
+def generate_speaker_avatar(
+    speaker_id: str,
+    payload: AvatarGenerationRequest,
+    _library_guard: None = Depends(protected_library_mutation),
+):
     if not payload.confirm_image_rights:
         raise HTTPException(status_code=422, detail='Confirm that you may use this face photo')
     try:
@@ -473,7 +623,7 @@ def generate_speaker_avatar(speaker_id: str, payload: AvatarGenerationRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ValueError, JobConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    job_manager.run_in_thread(job.id, lambda: generate_avatar(job.id, speaker_id))
+    job_manager.run_in_thread(job.id, lambda: run_protected_library_job(lambda: generate_avatar(job.id, speaker_id)))
     return AvatarJobResponse(job_id=job.id, status=job.status, detail=job.message)
 
 
@@ -511,7 +661,7 @@ def start_transcribe_job():
         job = job_manager.create(mode='transcribe', message='Queued transcription job')
     except JobConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    job_manager.run_in_thread(job.id, lambda: transcribe_unprocessed(job.id))
+    job_manager.run_in_thread(job.id, lambda: run_protected_library_job(lambda: transcribe_unprocessed(job.id)))
     return job
 
 
@@ -525,7 +675,7 @@ def _start_memory_batch():
         job = job_manager.create(mode='memory-batch', message='Queued local memory batch')
     except JobConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    job_manager.run_in_thread(job.id, lambda: process_memory_batch(job.id))
+    job_manager.run_in_thread(job.id, lambda: run_protected_library_job(lambda: process_memory_batch(job.id)))
     return job
 
 
@@ -594,45 +744,51 @@ def chat_stream(payload: ChatRequest):
     status = provider_status()
     if not status['active_ready']:
         raise HTTPException(status_code=503, detail='The selected answer engine is not ready. Check Settings.')
+    if not _chat_stream_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail='An answer is already being prepared. Clear it before asking another question.')
 
     def events():
-        started = time.perf_counter()
-        prepared = prepare_answer(payload.question.strip())
-        current_provider = active_provider()
-        direct_answer = getattr(prepared, 'direct_answer', None)
-        response_provider = 'memory' if direct_answer is not None else current_provider.name
-        yield f'event: meta\ndata: {json.dumps({"mode": prepared.mode, "sources": [source.model_dump(mode="json") for source in prepared.sources], "provider": response_provider, "retrieval_seconds": prepared.retrieval_seconds})}\n\n'
-        if direct_answer is not None:
-            elapsed = time.perf_counter() - started
-            yield f'event: token\ndata: {json.dumps({"text": direct_answer})}\n\n'
-            yield f'event: done\ndata: {json.dumps({"elapsed_seconds": elapsed, "first_token_seconds": elapsed, "characters": len(direct_answer)})}\n\n'
-            return
-        first_token = None
-        answer_parts = []
-        output: queue.Queue[tuple[str, object]] = queue.Queue()
         canceled = threading.Event()
-
-        def produce() -> None:
-            stream = None
-            try:
-                stream = current_provider.stream(prepared.prompt)
-                for token in stream:
-                    if canceled.is_set():
-                        break
-                    output.put(('token', token))
-            except Exception as exc:
-                output.put(('error', exc))
-            finally:
-                if stream is not None and hasattr(stream, 'close'):
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-                output.put(('done', None))
-
-        threading.Thread(target=produce, name=f'chat-{current_provider.name}', daemon=True).start()
-        failed = False
+        worker_started = False
         try:
+            started = time.perf_counter()
+            prepared = prepare_answer(payload.question.strip())
+            current_provider = active_provider()
+            direct_answer = getattr(prepared, 'direct_answer', None)
+            response_provider = 'memory' if direct_answer is not None else current_provider.name
+            yield f'event: meta\ndata: {json.dumps({"mode": prepared.mode, "sources": [source.model_dump(mode="json") for source in prepared.sources], "provider": response_provider, "retrieval_seconds": prepared.retrieval_seconds})}\n\n'
+            if direct_answer is not None:
+                elapsed = time.perf_counter() - started
+                yield f'event: token\ndata: {json.dumps({"text": direct_answer})}\n\n'
+                yield f'event: done\ndata: {json.dumps({"elapsed_seconds": elapsed, "first_token_seconds": elapsed, "characters": len(direct_answer)})}\n\n'
+                return
+            first_token = None
+            answer_parts = []
+            output: queue.Queue[tuple[str, object]] = queue.Queue()
+
+            def produce() -> None:
+                stream = None
+                try:
+                    stream = current_provider.stream(prepared.prompt, cancel_event=canceled)
+                    for token in stream:
+                        if canceled.is_set():
+                            break
+                        output.put(('token', token))
+                except Exception as exc:
+                    if not canceled.is_set():
+                        output.put(('error', exc))
+                finally:
+                    if stream is not None and hasattr(stream, 'close'):
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+                    output.put(('done', None))
+                    _chat_stream_lock.release()
+
+            threading.Thread(target=produce, name=f'chat-{current_provider.name}', daemon=True).start()
+            worker_started = True
+            failed = False
             while True:
                 try:
                     event, value = output.get(timeout=settings.provider_stream_heartbeat_seconds)
@@ -663,20 +819,27 @@ def chat_stream(payload: ChatRequest):
                     yield f'event: error\ndata: {json.dumps({"detail": detail})}\n\n'
                 elif event == 'done':
                     break
+            if not failed:
+                elapsed = time.perf_counter() - started
+                raw_answer = ''.join(answer_parts)
+                grounded_answer, grounding_supported, grounding_reasons = ground_personal_answer(prepared, raw_answer)
+                if grounded_answer != raw_answer:
+                    yield f'event: replace\ndata: {json.dumps({"text": grounded_answer, "reason": "grounding"})}\n\n'
+                record_stream_audit(
+                    current_provider.name,
+                    getattr(current_provider, 'model', ollama_client.chat_model),
+                    elapsed,
+                    len(grounded_answer),
+                    response_id=getattr(current_provider, 'last_response_id', ''),
+                    usage=getattr(current_provider, 'last_usage', {}),
+                    grounding_supported=grounding_supported,
+                    grounding_reasons=grounding_reasons,
+                )
+                yield f'event: done\ndata: {json.dumps({"elapsed_seconds": elapsed, "first_token_seconds": first_token, "characters": len(grounded_answer), "grounding_supported": grounding_supported})}\n\n'
         finally:
             canceled.set()
-
-        if not failed:
-            elapsed = time.perf_counter() - started
-            record_stream_audit(
-                current_provider.name,
-                getattr(current_provider, 'model', ollama_client.chat_model),
-                elapsed,
-                sum(len(value) for value in answer_parts),
-                response_id=getattr(current_provider, 'last_response_id', ''),
-                usage=getattr(current_provider, 'last_usage', {}),
-            )
-            yield f'event: done\ndata: {json.dumps({"elapsed_seconds": elapsed, "first_token_seconds": first_token, "characters": sum(len(value) for value in answer_parts)})}\n\n'
+            if not worker_started:
+                _chat_stream_lock.release()
 
     return StreamingResponse(events(), media_type='text/event-stream', headers={'X-Accel-Buffering': 'no'})
 
@@ -718,7 +881,9 @@ def voice_candidates():
 
 
 @app.post('/api/voice/prepare', response_model=VoiceStatus)
-def prepare_voice(payload: VoicePrepareRequest):
+def prepare_voice(payload: VoicePrepareRequest, _library_guard: None = Depends(protected_library_mutation)):
+    if not payload.session_id.strip():
+        raise HTTPException(status_code=400, detail='Choose a recording before creating your AI voice')
     try:
         return prepare_voice_reference(payload)
     except FileNotFoundError as exc:
@@ -726,11 +891,15 @@ def prepare_voice(payload: VoicePrepareRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.exception('voice reference preparation failed')
+        raise HTTPException(status_code=503, detail='The voice reference could not be prepared safely') from exc
 
 
 @app.post('/api/voice/revoke', response_model=VoiceStatus)
-def revoke_synthetic_voice(delete_reference: bool = Query(default=True)):
+def revoke_synthetic_voice(
+    delete_reference: bool = Query(default=True),
+    _library_guard: None = Depends(protected_library_mutation),
+):
     return revoke_voice(delete_reference=delete_reference)
 
 
@@ -808,6 +977,11 @@ def sessions():
     return list_sessions()
 
 
+@app.get('/api/sessions/search', response_model=list[SessionSummary])
+def sessions_search(q: str = Query(min_length=1, max_length=200), limit: int = Query(default=100, ge=1, le=200)):
+    return search_sessions(q, limit)
+
+
 @app.get('/api/sessions/on-this-day', response_model=list[SessionSummary])
 def sessions_on_this_day():
     return on_this_day_sessions()
@@ -831,6 +1005,27 @@ def session_detail(session_id: str, include_transcript: bool = True):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get('/api/sessions/{session_id}/audio')
+def session_audio(session_id: str):
+    if is_sealed(session_id):
+        raise HTTPException(status_code=403, detail='This memory is sealed until its unlock date')
+    try:
+        session = safe_session_dir(session_id)
+        paths = session_paths(session)
+        audio = paths['audio'] if paths['audio'].exists() else paths['source_audio']
+        if not audio.exists():
+            raise FileNotFoundError('Recording audio is unavailable')
+        if audio == paths['audio']:
+            media_type = 'audio/flac'
+        else:
+            state = json.loads(paths['state'].read_text(encoding='utf-8')) if paths['state'].exists() else {}
+            original_type = str(state.get('original_content_type') or '').lower()
+            media_type = original_type if original_type.startswith('audio/') else 'application/octet-stream'
+        return FileResponse(audio, media_type=media_type, filename=f'{session_id}{audio.suffix}')
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get('/api/sessions/{session_id}/related')
 def session_related(session_id: str):
     try:
@@ -840,7 +1035,11 @@ def session_related(session_id: str):
 
 
 @app.put('/api/sessions/{session_id}/transcript')
-def update_transcript(session_id: str, payload: TranscriptUpdate):
+def update_transcript(
+    session_id: str,
+    payload: TranscriptUpdate,
+    _library_guard: None = Depends(protected_library_mutation),
+):
     try:
         if is_sealed(session_id):
             raise HTTPException(status_code=403, detail='This memory is sealed until its unlock date')
@@ -852,8 +1051,28 @@ def update_transcript(session_id: str, payload: TranscriptUpdate):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.put('/api/sessions/{session_id}/conversation-transcript')
+def update_conversation_transcript(
+    session_id: str,
+    payload: TranscriptUpdate,
+    _library_guard: None = Depends(protected_library_mutation),
+):
+    if is_sealed(session_id):
+        raise HTTPException(status_code=403, detail='This memory is sealed until its unlock date')
+    try:
+        return revise_conversation_transcript(safe_session_dir(session_id), payload.transcript, payload.reason)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, SpeakerWorkflowError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.post('/api/sessions/{session_id}/archive')
-def archive(session_id: str, confirm: bool = Query(default=False)):
+def archive(
+    session_id: str,
+    confirm: bool = Query(default=False),
+    _library_guard: None = Depends(protected_library_mutation),
+):
     if not confirm:
         raise HTTPException(status_code=400, detail='Set confirm=true to archive this session non-destructively')
     try:
@@ -864,7 +1083,11 @@ def archive(session_id: str, confirm: bool = Query(default=False)):
 
 
 @app.post('/api/sessions/{session_id}/seal')
-def seal_session(session_id: str, payload: SealRequest):
+def seal_session(
+    session_id: str,
+    payload: SealRequest,
+    _library_guard: None = Depends(protected_library_mutation),
+):
     if payload.unlock_at.tzinfo is None:
         unlock_at = payload.unlock_at.replace(tzinfo=timezone.utc)
     else:
@@ -923,8 +1146,9 @@ def start_reindex_job(confirm: bool = Query(default=False)):
     except JobConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     def local_reindex():
-        with ollama_client.local_embedding_batch():
-            reindex_to_migration_collection(job.id)
+        with library_write_lock():
+            with ollama_client.local_embedding_batch():
+                reindex_to_migration_collection(job.id)
     job_manager.run_in_thread(job.id, local_reindex)
     return job
 

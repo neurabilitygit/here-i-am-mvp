@@ -96,6 +96,12 @@ body[data-avatar-state="speaking"] .mouth-line { opacity: .35; }
 .answer-text { font-family: ui-serif, Georgia, serif; font-size: clamp(1.22rem, 2.2vw, 1.7rem); line-height: 1.62; letter-spacing: .005em; white-space: pre-wrap; }
 .answer-text::after { content: ""; display: inline-block; width: .5em; height: 1em; margin-left: .2em; vertical-align: -.1em; background: var(--aqua); animation: cursor-pulse .8s infinite; }
 .answer-card.complete .answer-text::after { display: none; }
+.answer-provenance { margin-top: 1rem; padding-top: .8rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+.answer-provenance summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--ink); font-weight: 700; }
+.answer-provenance ul { margin: .5rem 0 0; padding-left: 1.25rem; }
+.memory-audio { width: 100%; min-height: 48px; margin: .5rem 0 1rem; }
+.memory-card.needs-attention { border-color: rgba(255,189,105,.7); }
+.memory-card.needs-attention > strong { color: #ffbd69; font-size: .86rem; }
 @keyframes cursor-pulse { 50% { opacity: .2 } }
 .answer-actions { display: flex; align-items: center; gap: .7rem; margin-top: 1.1rem; }
 .compare-action { width: auto; padding-inline: 1rem; }

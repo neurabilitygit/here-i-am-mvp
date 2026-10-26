@@ -69,6 +69,7 @@
         <div id="talk-provider-badge" class="talk-provider-badge" role="status" aria-label="Selected answer engine">Best answer · OpenAI</div>
         <div id="answer-card" class="answer-card" hidden>
           <div id="answer-text" class="answer-text"></div>
+          <details id="answer-provenance" class="answer-provenance" hidden><summary>Why this answer?</summary><p>This answer used these recorded memories:</p><ul id="answer-provenance-list"></ul></details>
           <p id="answer-announcement" class="sr-only" role="status" aria-live="polite"></p>
           <div class="answer-actions">
             <button id="speak-answer" class="round-action" type="button" aria-label="Play this answer" disabled><span aria-hidden="true">▶</span><span>Play</span></button>
@@ -106,6 +107,7 @@
             <label><input id="record-mode-solo" type="radio" name="record-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong><small>One voice</small></span></label>
             <label><input id="record-mode-conversation" type="radio" name="record-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>A conversation</strong><small>Two voices</small></span></label>
           </fieldset>
+          <label id="record-conversation-consent-card" class="consent-card" hidden><input id="record-conversation-consent" type="checkbox"/><span><strong>Everyone has agreed to speaker recognition.</strong><small>A compressed copy of this conversation will be sent to OpenAI to separate the voices. Memory embeddings remain local.</small></span></label>
           <label class="floating-field" for="record-title"><span>Give this memory a name</span><input id="record-title" maxlength="160" placeholder="A summer afternoon…" /></label>
           <label class="switch"><input id="record-seal" type="checkbox"/><span></span>Seal until a future date</label>
           <label class="floating-field" id="record-seal-date-field" hidden for="record-seal-date"><span>Unlock on</span><input id="record-seal-date" type="date" /></label>
@@ -116,8 +118,8 @@
             <button id="record-pause" class="secondary-orb" type="button" disabled>Pause</button>
             <button id="record-stop" class="secondary-orb save" type="button" disabled>Save</button>
           </div>
-          <p id="recording-status" class="plain-status" role="status" aria-live="polite">Tap Record when you are ready.</p>
           <button id="record-retry" class="wide-button" type="button" hidden>Try saving again</button>
+          <p id="recording-status" class="plain-status" role="status" aria-live="polite">Tap Record when you are ready.</p>
         </div>
       </section>
 
@@ -154,6 +156,7 @@
             <label><input id="import-mode-solo" type="radio" name="import-mode" value="solo" checked /><span><b aria-hidden="true">●</b><strong>Just me</strong></span></label>
             <label><input id="import-mode-conversation" type="radio" name="import-mode" value="conversation" /><span><b aria-hidden="true">● ●</b><strong>Conversation</strong></span></label>
           </fieldset>
+          <label id="import-conversation-consent-card" class="consent-card" hidden><input id="import-conversation-consent" type="checkbox"/><span><strong>I have permission to analyze these voices.</strong><small>A compressed copy will be sent to OpenAI for speaker-separated transcription. It will not be used for embeddings.</small></span></label>
           <p id="memory-upload-status" class="memory-upload-status" role="status" aria-live="polite">The original stays on this Mac. A conversation analysis copy uses OpenAI only when you start the memory batch.</p>
         </section>
         <section id="sealed-letters" class="memory-queue sealed-letters" hidden role="status" aria-live="polite" aria-labelledby="sealed-letters-title">
@@ -270,6 +273,7 @@
       <header><div><p class="scene-kicker">Memory</p><h2 id="memory-dialog-title">Memory</h2></div><button class="close-button" value="close" aria-label="Close memory">×</button></header>
       <div id="memory-meta" class="memory-meta"></div>
       <label for="memory-transcript">Words from this memory</label>
+      <audio id="memory-audio" class="memory-audio" controls preload="metadata" hidden></audio>
       <textarea id="memory-transcript" rows="14"></textarea>
       <div class="detail-actions"><button id="memory-save" type="button" class="primary-wide">Save changes</button><a id="memory-export" class="wide-button" href="#">Take a copy</a></div>
       <p id="memory-dialog-status" role="status"></p>
@@ -287,7 +291,7 @@
       <label>Recording<select id="voice-candidate"></select></label>
       <label>Voice engine<select id="voice-provider"><option value="local">On this Mac — private</option><option value="elevenlabs">ElevenLabs cloud</option></select></label>
       <label class="consent-card"><input id="voice-consent" type="checkbox"/><span><strong>I have the right to use this voice.</strong><small>I understand that AI can make this voice say new words, and generated speech will be labeled. If I choose ElevenLabs, the short derived reference and answer text are sent to that provider.</small></span></label>
-      <button id="voice-create" class="primary-wide" type="button">Create my AI voice</button>
+      <button id="voice-create" class="primary-wide" type="button" disabled>Create my AI voice</button>
       <p id="voice-dialog-status" role="status"></p>
     </form>
   </dialog>
@@ -317,7 +321,7 @@
   <dialog id="speaker-review-dialog" class="sheet-dialog">
     <div class="sheet speaker-review-sheet">
       <header><div><p class="scene-kicker">A conversation</p><h2>Name each voice</h2></div><button id="speaker-review-close" class="close-button" type="button" aria-label="Close voice review">×</button></header>
-      <p class="setting-note">Listen to each voice, choose a person or add a new name, then identify the one person whose memories should be kept.</p>
+      <p class="setting-note">Listen to each voice, choose a person or add a new name, then identify the one person whose memories should be kept. Saving a reusable voice sample is optional.</p>
       <div id="speaker-clusters" class="speaker-clusters"></div>
       <footer><button id="speaker-review-save" class="primary-wide" type="button">Save voices and prepare memory</button><p id="speaker-review-status" role="status" aria-live="polite"></p></footer>
     </div>

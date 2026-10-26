@@ -223,9 +223,14 @@ async function submitLogin(event) {
       return;
     }
     input.value = '';
-    status.textContent = '';
-    byId('login-dialog').close();
-    await bootApp();
+    status.textContent = 'Opening Here I Am…';
+    // Start from a fresh document after authentication. In Safari, calling
+    // protected APIs immediately from this fetch continuation can race the
+    // newly issued HttpOnly cookie, briefly returning 401 and leaving the
+    // sign-in dialog visible. A same-origin replacement commits the cookie
+    // before initialize() loads the landing page and also avoids retaining
+    // the sign-in state in browser history.
+    window.location.replace('/');
   } catch (error) {
     status.textContent = 'Could not reach Here I Am. Try again.';
   }
@@ -258,6 +263,7 @@ function persistCompletedAnswer() {
       answer: state.lastAnswer,
       mode: state.lastMode,
       provider: state.lastProvider,
+      sources: state.lastSources,
       saved_at: new Date().toISOString(),
     }));
   } catch (_) {}
@@ -270,11 +276,13 @@ function restoreCompletedAnswer() {
   state.lastAnswer = saved.answer.slice(0, 40000);
   state.lastMode = typeof saved.mode === 'string' ? saved.mode : '';
   state.lastProvider = typeof saved.provider === 'string' ? saved.provider : '';
+  state.lastSources = Array.isArray(saved.sources) ? saved.sources.slice(0, 12) : [];
   byId('answer-text').textContent = state.lastAnswer;
   byId('answer-card').hidden = false;
   byId('answer-card').classList.add('complete');
   byId('answer-announcement').textContent = 'Your previous written answer was restored after the page reloaded.';
   renderTalkProviderBadge(state.lastProvider || state.preferences?.provider);
+  renderAnswerProvenance();
   updateSpeakButton();
   return true;
 }
@@ -466,14 +474,30 @@ function parseSSEBlock(block) {
   try { return {event, data: JSON.parse(data.join('\n'))}; } catch { return null; }
 }
 
+function renderAnswerProvenance(){
+  const details=byId('answer-provenance');const list=byId('answer-provenance-list');
+  const unique=[];const seen=new Set();
+  (state.lastSources||[]).forEach((source)=>{if(source?.session_id&&!seen.has(source.session_id)){seen.add(source.session_id);unique.push(source);}});
+  details.hidden=!unique.length;
+  if(!unique.length){details.open=false;list.replaceChildren();return;}
+  list.replaceChildren(...unique.map((source)=>{const item=document.createElement('li');item.textContent=source.title||formatMemoryDate(source.session_id)||'Recorded memory';return item;}));
+}
+
+function setChatBusy(busy){
+  byId('chat-send').disabled=busy;
+  byId('voice-question').disabled=busy;
+  document.querySelectorAll('#suggestions button:not(#quiz-open)').forEach((button)=>{button.disabled=busy;});
+  byId('chat-question').setAttribute('aria-busy',String(busy));
+}
+
 async function askQuestion(question) {
   const value = question.trim();
   if (!value) return;
+  if(state.chatAbort){setPresence('Still answering — use × to cancel first','thinking');return;}
   const startedAt = performance.now();
   cancelVoicePrerender();
   if (state.voicePreparing || state.voicePlaying) stopSpeaking();
   beginFetchTask();
-  state.chatAbort?.abort();
   const generation = ++state.chatGeneration;
   const controller = new AbortController();
   state.chatAbort = controller;
@@ -481,6 +505,8 @@ async function askQuestion(question) {
   state.chatRequestId = requestId;
   state.lastQuestion = value;
   state.lastAnswer = '';
+  state.lastSources = [];
+  renderAnswerProvenance();
   try { sessionStorage.removeItem(ANSWER_STORAGE_KEY); } catch (_) {}
   activity('question_submitted', {request_id: requestId, question_chars: value.length, generation});
   byId('chat-question').value = '';
@@ -493,7 +519,7 @@ async function askQuestion(question) {
   byId('speak-answer').disabled = true;
   byId('compare-answer').disabled = true;
   setPresence('Finding the right memories…', 'thinking');
-  byId('chat-send').disabled = true;
+  setChatBusy(true);
   let buffer = '';
   try {
     const response = await fetch('/api/chat/stream', {
@@ -518,6 +544,8 @@ async function askQuestion(question) {
         if (parsed.event === 'meta') {
           state.lastMode = parsed.data.mode;
           state.lastProvider = parsed.data.provider;
+          state.lastSources = Array.isArray(parsed.data.sources) ? parsed.data.sources : [];
+          renderAnswerProvenance();
           renderTalkProviderBadge(parsed.data.provider);
           setPresence(
             parsed.data.provider === 'memory'
@@ -529,6 +557,10 @@ async function askQuestion(question) {
           state.lastAnswer += parsed.data.text;
           byId('answer-text').textContent = state.lastAnswer;
           setPresence('Answering…', 'speaking');
+        } else if (parsed.event === 'replace') {
+          state.lastAnswer=parsed.data.text||'';
+          byId('answer-text').textContent=state.lastAnswer;
+          activity('answer_grounding_replaced',{reason:parsed.data.reason||'grounding'});
         } else if (parsed.event === 'error') throw new Error(parsed.data.detail);
       }
     }
@@ -560,7 +592,7 @@ async function askQuestion(question) {
     if (generation === state.chatGeneration) {
       state.chatAbort = null;
       state.chatRequestId = null;
-      byId('chat-send').disabled = false;
+      setChatBusy(false);
     }
     endFetchTask();
   }
@@ -576,6 +608,8 @@ function clearAnswer() {
   state.lastAnswer = '';
   state.lastMode = '';
   state.lastProvider = '';
+  state.lastSources = [];
+  renderAnswerProvenance();
   try { sessionStorage.removeItem(ANSWER_STORAGE_KEY); } catch (_) {}
   activity('answer_cleared', {reason: 'clear_button'});
   byId('answer-text').textContent = '';
@@ -584,6 +618,7 @@ function clearAnswer() {
   byId('answer-card').hidden = true;
   byId('answer-card').scrollTop = 0;
   byId('chat-send').disabled = false;
+  setChatBusy(false);
   byId('compare-answer').disabled = true;
   byId('feedback-up').classList.remove('selected');
   renderTalkProviderBadge(state.preferences?.provider);
@@ -1052,6 +1087,8 @@ function updateRecordTime() {
 
 async function startRecording() {
   try {
+    const mode=document.querySelector('input[name="record-mode"]:checked')?.value||'solo';
+    if(mode==='conversation'&&!byId('record-conversation-consent').checked)throw new Error('Confirm that everyone has agreed to speaker recognition before recording a conversation');
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('This browser cannot record audio');
     // Invalidates any still-pending upload/retry from a prior recording so its
     // eventual completion can't reset/clobber this new recording's live state.
@@ -1125,7 +1162,9 @@ async function uploadRecording({unexpected=false}={}){
     const type=state.recordedChunks[0].type||state.mediaRecorder?.mimeType||'audio/webm'; const form=new FormData();
     form.append('file',new Blob(state.recordedChunks,{type}),type.includes('mp4')?'memory.m4a':'memory.webm');
     const title=byId('record-title').value.trim(); if(title)form.append('title',title);
-    form.append('recording_mode',document.querySelector('input[name="record-mode"]:checked')?.value||'solo');
+    const recordingMode=document.querySelector('input[name="record-mode"]:checked')?.value||'solo';
+    form.append('recording_mode',recordingMode);
+    form.append('confirm_conversation_cloud',String(recordingMode!=='conversation'||byId('record-conversation-consent').checked));
     response = await api('/api/recordings/upload',{method:'POST',body:form});
   }catch(error){
     // Only a failure of the upload itself means the memory was not saved.
@@ -1159,7 +1198,7 @@ async function uploadRecording({unexpected=false}={}){
     }catch(error){/* the memory itself is still saved even if sealing fails */}
   }
   byId('record-seal').checked=false;byId('record-seal-date-field').hidden=true;byId('record-seal-date').value='';
-  resetRecorder(); byId('recording-status').textContent=unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'; byId('record-title').value='';
+  resetRecorder(); byId('recording-status').textContent=response.status==='needs_attention'?response.message:(unexpected?'The microphone stopped, but your recording was saved safely.':'Your recording is safe and waiting for the next local batch.'); byId('record-title').value='';
   if (sceneAtCompletion === 'remember') showScene('memories', 'recording_upload_completed');
   try{
     await Promise.all([refreshLibrary(),refreshMemoryQueue()]);
@@ -1295,7 +1334,10 @@ async function openSpeakerReview(sessionId){
       const roleLabel=document.createElement('label');roleLabel.textContent='What was this person doing?';const role=document.createElement('select');role.className='cluster-role';
       [['memory_subject','Sharing their memories'],['interviewer','Asking questions'],['other','Joining the conversation']].forEach(([value,label])=>{const option=document.createElement('option');option.value=value;option.textContent=label;role.append(option);});
       const known=state.speakers.find((speaker)=>speaker.speaker_id===suggested);role.value=cluster.assignment?.role||known?.default_role||(!subjectKnown&&index===0?'memory_subject':'interviewer');roleLabel.append(role);
-      card.append(head,listen,preview,personLabel,roleLabel);return card;
+      const retainLabel=document.createElement('label');retainLabel.className='consent-card cluster-reference-consent';
+      const retain=document.createElement('input');retain.type='checkbox';retain.className='cluster-retain-reference';retain.checked=Boolean(known?.voice_matching_consented);
+      const retainCopy=document.createElement('span');const retainTitle=document.createElement('strong');retainTitle.textContent='Recognize this voice next time';const retainDetail=document.createElement('small');retainDetail.textContent='Save a short local voice sample. If a future conversation uses cloud speaker recognition, that sample may be sent with it.';retainCopy.append(retainTitle,retainDetail);retainLabel.append(retain,retainCopy);
+      card.append(head,listen,preview,personLabel,roleLabel,retainLabel);return card;
     });
     byId('speaker-clusters').replaceChildren(...cards);byId('speaker-review-status').textContent='Choose exactly one person whose memories should be kept.';
   }catch(error){byId('speaker-review-status').textContent=error.message;}
@@ -1304,7 +1346,7 @@ async function openSpeakerReview(sessionId){
 async function saveSpeakerReview(){
   if(!state.activeSpeakerReviewId)return;
   const cards=Array.from(document.querySelectorAll('.speaker-cluster-card'));const assignments=[];
-  for(const card of cards){const person=card.querySelector('.cluster-speaker').value;const newName=card.querySelector('.cluster-new-name').value.trim();if(!person){byId('speaker-review-status').textContent='Choose a person for every voice.';return;}if(person==='__new__'&&!newName){byId('speaker-review-status').textContent='Type a name for each new person.';return;}assignments.push({cluster_id:card.dataset.clusterId,speaker_id:person==='__new__'?null:person,display_name:person==='__new__'?newName:null,role:card.querySelector('.cluster-role').value});}
+  for(const card of cards){const person=card.querySelector('.cluster-speaker').value;const newName=card.querySelector('.cluster-new-name').value.trim();if(!person){byId('speaker-review-status').textContent='Choose a person for every voice.';return;}if(person==='__new__'&&!newName){byId('speaker-review-status').textContent='Type a name for each new person.';return;}assignments.push({cluster_id:card.dataset.clusterId,speaker_id:person==='__new__'?null:person,display_name:person==='__new__'?newName:null,role:card.querySelector('.cluster-role').value,retain_voice_reference:card.querySelector('.cluster-retain-reference').checked});}
   if(new Set(assignments.filter((item)=>item.role==='memory_subject').map((item)=>item.speaker_id||item.display_name)).size!==1){byId('speaker-review-status').textContent='Choose exactly one person who is sharing memories.';return;}
   byId('speaker-review-save').disabled=true;byId('speaker-review-status').textContent='Saving the voices without embedding yet…';
   try{await api(`/api/sessions/${encodeURIComponent(state.activeSpeakerReviewId)}/speaker-assignments`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({assignments})});byId('speaker-review-dialog').close();await Promise.all([refreshLibrary(),refreshMemoryQueue(),refreshSpeakers()]);byId('library-status').textContent='Voices saved. This conversation is waiting for the next local memory batch.';}
@@ -1347,8 +1389,10 @@ async function uploadMemoryFiles(fileList) {
   const zone = byId('memory-import');
   const choose = byId('memory-upload-choose');
   const valid = files.filter(isAudioUpload);
+  const importMode=document.querySelector('input[name="import-mode"]:checked')?.value||'solo';
   status.classList.remove('is-error');
   if (!files.length) return;
+  if(importMode==='conversation'&&!byId('import-conversation-consent').checked){status.textContent='Confirm permission to analyze the voices before adding a conversation.';status.classList.add('is-error');return;}
   if (!valid.length) {
     status.textContent = 'Please choose a voice recording, such as WAV, M4A, MP3, or FLAC.';
     status.classList.add('is-error');
@@ -1366,8 +1410,11 @@ async function uploadMemoryFiles(fileList) {
       const form = new FormData();
       form.append('file', file, file.name);
       form.append('title', memoryUploadTitle(file));
-      form.append('recording_mode',document.querySelector('input[name="import-mode"]:checked')?.value||'solo');
-      await api('/api/recordings/upload', {method:'POST', body:form});
+      const importMode=document.querySelector('input[name="import-mode"]:checked')?.value||'solo';
+      form.append('recording_mode',importMode);
+      form.append('confirm_conversation_cloud',String(importMode!=='conversation'||byId('import-conversation-consent').checked));
+      const result=await api('/api/recordings/upload', {method:'POST', body:form});
+      if(result.status==='needs_attention')status.textContent=result.message;
       completed += 1;
     }
     const skipped = files.length - valid.length;
@@ -1448,15 +1495,33 @@ async function monitorMemoryBatch(job){
 function formatMemoryDate(sessionId){const match=sessionId.match(/^(\d{4})-(\d{2})-(\d{2})/);if(!match)return'';return new Date(`${match[1]}-${match[2]}-${match[3]}T12:00:00`).toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'});}
 
 function buildMemoryCard(session){
-  const button=document.createElement('button');button.type='button';button.className='memory-card';button.setAttribute('aria-label',`${session.title}. ${session.embedded?'Ready to answer questions':'Waiting for local preparation'}.`);
-  const date=document.createElement('small');date.textContent=formatMemoryDate(session.session_id);const title=document.createElement('h3');title.textContent=session.title;const status=document.createElement('div');status.className='memory-state';status.title=session.embedded?'Ready to answer questions':'Waiting for the local batch';
-  ['recorded','transcribed','embedded'].forEach((key)=>{const dot=document.createElement('span');dot.classList.toggle('ready',session[key]);status.append(dot)});button.append(date,title,status);button.addEventListener('click',()=>session.speaker_review_status==='needs_review'?openSpeakerReview(session.session_id):openMemory(session.session_id));
+  const needsValidation=session.upload_status==='validation_failed';
+  const button=document.createElement('button');button.type='button';button.className='memory-card';button.classList.toggle('needs-attention',needsValidation);button.setAttribute('aria-label',`${session.title}. ${needsValidation?'Saved original needs another preparation attempt':session.embedded?'Ready to answer questions':'Waiting for local preparation'}.`);
+  const date=document.createElement('small');date.textContent=formatMemoryDate(session.session_id);const title=document.createElement('h3');title.textContent=session.title;const status=document.createElement('div');status.className='memory-state';status.title=needsValidation?'Saved original needs attention':session.embedded?'Ready to answer questions':'Waiting for the local batch';
+  ['recorded','transcribed','embedded'].forEach((key)=>{const dot=document.createElement('span');dot.classList.toggle('ready',session[key]);status.append(dot)});if(needsValidation){const warning=document.createElement('strong');warning.textContent='Try preparing this saved recording again';button.append(date,title,status,warning);button.addEventListener('click',()=>retryStoredRecording(session.session_id));}else{button.append(date,title,status);button.addEventListener('click',()=>session.speaker_review_status==='needs_review'?openSpeakerReview(session.session_id):openMemory(session.session_id));}
   return button;
+}
+
+async function retryStoredRecording(sessionId){
+  byId('library-status').textContent='Preparing the safely stored original recording…';
+  try{await api(`/api/sessions/${encodeURIComponent(sessionId)}/recording/retry`,{method:'POST'});byId('library-status').textContent='The recording is ready for the next memory batch.';await Promise.all([refreshLibrary(),refreshMemoryQueue()]);}
+  catch(error){byId('library-status').textContent=`The original remains safe. ${error.message}`;}
 }
 
 function filteredSessions(){
   const query=byId('memory-search').value.trim().toLowerCase();
-  return state.sessions.filter((item)=>!query||item.title.toLowerCase().includes(query)||item.session_id.toLowerCase().includes(query));
+  if(!query)return state.sessions;
+  return state.memorySearchResults||state.sessions.filter((item)=>item.title.toLowerCase().includes(query)||item.session_id.toLowerCase().includes(query));
+}
+
+function searchMemoryLibrary(){
+  window.clearTimeout(state.memorySearchTimer);
+  const query=byId('memory-search').value.trim();
+  if(!query){state.memorySearchResults=null;renderActiveMemoriesView();return;}
+  state.memorySearchTimer=window.setTimeout(async()=>{
+    try{state.memorySearchResults=await api(`/api/sessions/search?q=${encodeURIComponent(query)}`);renderActiveMemoriesView();}
+    catch(error){byId('library-status').textContent='Search could not finish. Your memories are unchanged.';}
+  },250);
 }
 
 function renderMemories(){
@@ -1609,7 +1674,7 @@ async function refreshPromptOfTheDay(){
 }
 
 async function refreshLibrary(){
-  try{state.sessions=await api('/api/sessions');renderActiveMemoriesView();renderSpeakerReviewQueue();renderToneReflection();byId('library-status').textContent=state.sessions.length?'Choose any memory to read or change its words.':'Your first memory will appear here.';}
+  try{state.sessions=await api('/api/sessions');state.memorySearchResults=null;renderActiveMemoriesView();renderSpeakerReviewQueue();renderToneReflection();if(byId('memory-search').value.trim())searchMemoryLibrary();byId('library-status').textContent=state.sessions.length?'Choose any memory to read or change its words.':'Your first memory will appear here.';}
   catch(error){
     // Raw browser network errors (e.g. WebKit's "Load failed") do not mean
     // anything was lost -- they mean this specific list request could not
@@ -1659,28 +1724,32 @@ function renderRelatedMemories(sessionId,sources){
 }
 
 async function openMemory(sessionId){
-  try{const session=await api(`/api/sessions/${encodeURIComponent(sessionId)}`);state.activeSessionId=sessionId;const conversation=session.recording_mode==='conversation';byId('memory-dialog-title').textContent=session.title;byId('memory-meta').textContent=`${formatMemoryDate(sessionId)} · ${conversation?'Voice-labeled conversation · ':''}${session.embedded?'Ready for questions':'Waiting for the local batch'}`;byId('memory-transcript').value=session.transcript||'';byId('memory-transcript').disabled=!session.transcript||conversation;byId('memory-save').disabled=!session.transcript||conversation;byId('memory-export').href=`/api/sessions/${encodeURIComponent(sessionId)}/export`;byId('memory-dialog-status').textContent=conversation?'The labels preserve which words belong to the memory subject. Take a copy to review the full conversation.':session.transcript?'Every save keeps the earlier version safe.':'The words will appear after the local batch.';byId('related-memories').hidden=true;byId('memory-dialog').showModal();
+  try{const session=await api(`/api/sessions/${encodeURIComponent(sessionId)}`);state.activeSessionId=sessionId;state.activeSessionRecordingMode=session.recording_mode;const conversation=session.recording_mode==='conversation';byId('memory-dialog-title').textContent=session.title;byId('memory-meta').textContent=`${formatMemoryDate(sessionId)} · ${conversation?'Voice-labeled conversation · ':''}${session.embedded?'Ready for questions':'Waiting for the local batch'}`;const audio=byId('memory-audio');audio.hidden=!session.recorded;if(session.recorded)audio.src=`/api/sessions/${encodeURIComponent(sessionId)}/audio`;else audio.removeAttribute('src');byId('memory-transcript').value=session.transcript||'';byId('memory-transcript').disabled=!session.transcript;byId('memory-save').disabled=!session.transcript;byId('memory-export').href=`/api/sessions/${encodeURIComponent(sessionId)}/export`;byId('memory-dialog-status').textContent=conversation?'You may correct the words while keeping every **Name:** label and turn in place. Earlier versions remain safe.':session.transcript?'Every save keeps the earlier version safe.':'The words will appear after the local batch.';byId('related-memories').hidden=true;byId('memory-dialog').showModal();
   api(`/api/sessions/${encodeURIComponent(sessionId)}/related`).then((sources)=>renderRelatedMemories(sessionId,sources)).catch(()=>{});}
   catch(error){byId('library-status').textContent=error.message;}
 }
 
 async function saveMemory(){
   if(!state.activeSessionId)return;const transcript=byId('memory-transcript').value.trim();if(!transcript)return;byId('memory-dialog-status').textContent='Saving…';
-  try{await api(`/api/sessions/${encodeURIComponent(state.activeSessionId)}/transcript`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({transcript,reason:'reviewed in Living Portrait'})});byId('memory-dialog-status').textContent='Saved. This memory is queued for the next local batch.';await Promise.all([refreshLibrary(),refreshMemoryQueue()]);}
+  const endpoint=state.activeSessionRecordingMode==='conversation'?'conversation-transcript':'transcript';
+  try{await api(`/api/sessions/${encodeURIComponent(state.activeSessionId)}/${endpoint}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({transcript,reason:'reviewed in Living Portrait'})});byId('memory-dialog-status').textContent='Saved. This memory is queued for the next local batch.';await Promise.all([refreshLibrary(),refreshMemoryQueue()]);}
   catch(error){byId('memory-dialog-status').textContent=error.message;}
 }
 
 async function openVoiceSetup(){
+  const candidateSelect=byId('voice-candidate');const createButton=byId('voice-create');
+  createButton.disabled=true;candidateSelect.disabled=true;candidateSelect.replaceChildren();
   byId('voice-dialog-status').textContent='Finding clear recordings…';byId('voice-dialog').showModal();
-  try{const candidates=await api('/api/voice/candidates');const options=candidates.map((item)=>{const option=document.createElement('option');option.value=item.session_id;option.textContent=`${formatMemoryDate(item.session_id)} · ${Math.round(item.duration_seconds/60)} minutes · quality ${Math.round(item.score)}%`;return option});byId('voice-candidate').replaceChildren(...options);byId('voice-dialog-status').textContent=candidates.length?'A 15-second reference will be prepared from the recording you choose.':'No suitable recordings were found.';byId('voice-create').disabled=!candidates.length;}
-  catch(error){byId('voice-dialog-status').textContent=error.message;}
+  try{const candidates=await api('/api/voice/candidates');const options=candidates.map((item)=>{const option=document.createElement('option');option.value=item.session_id;option.textContent=`${formatMemoryDate(item.session_id)} · ${Math.round(item.duration_seconds/60)} minutes · quality ${Math.round(item.score)}%`;return option});candidateSelect.replaceChildren(...options);candidateSelect.disabled=!candidates.length;byId('voice-dialog-status').textContent=candidates.length?'A 15-second reference will be prepared from the recording you choose.':'No suitable recordings were found.';createButton.disabled=!candidateSelect.value;}
+  catch(error){candidateSelect.disabled=true;createButton.disabled=true;byId('voice-dialog-status').textContent=error.message;}
 }
 
 async function createVoice(){
   if(!byId('voice-consent').checked){byId('voice-dialog-status').textContent='Please confirm your right to use this voice.';return;}
+  const sessionId=byId('voice-candidate').value.trim();if(!sessionId){byId('voice-dialog-status').textContent='Choose a recording before creating your AI voice.';return;}
   byId('voice-create').disabled=true;byId('voice-dialog-status').textContent='Preparing a private voice reference…';
-  try{state.voice=await api('/api/voice/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:byId('voice-candidate').value,confirm_voice_rights:true,provider:byId('voice-provider').value,reference_start_seconds:5,reference_duration_seconds:15})});byId('voice-dialog-status').textContent=state.voice.bridge_ready||state.voice.provider==='elevenlabs'?'Your AI voice is ready.':'The reference is ready. Start the local voice helper to speak.';await loadVoiceStatus();window.setTimeout(()=>byId('voice-dialog').close(),900);}
-  catch(error){byId('voice-dialog-status').textContent=error.message;}finally{byId('voice-create').disabled=false;}
+  try{state.voice=await api('/api/voice/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sessionId,confirm_voice_rights:true,provider:byId('voice-provider').value,reference_start_seconds:5,reference_duration_seconds:15})});byId('voice-dialog-status').textContent=state.voice.bridge_ready||state.voice.provider==='elevenlabs'?'Your AI voice is ready.':'The reference is ready. Start the local voice helper to speak.';await loadVoiceStatus();window.setTimeout(()=>byId('voice-dialog').close(),900);}
+  catch(error){byId('voice-dialog-status').textContent=error.message;}finally{byId('voice-create').disabled=!byId('voice-candidate').value;}
 }
 
 async function revokeVoice(){if(!window.confirm('Turn off the AI voice and remove its derived reference? Original recordings will stay safe.'))return;state.voice=await api('/api/voice/revoke?delete_reference=true',{method:'POST'});await loadVoiceStatus();}
@@ -1712,7 +1781,7 @@ async function createBackup(){
 }
 
 function bindEvents(){
-  window.addEventListener('pagehide',()=>{activity('page_hidden',{has_answer:Boolean(state.lastAnswer),voice_preparing:Boolean(state.voicePreparing||state.voicePrerenderRequestId)});cancelVoiceOnPageExit();});
+  window.addEventListener('pagehide',()=>{state.chatAbort?.abort();activity('page_hidden',{has_answer:Boolean(state.lastAnswer),voice_preparing:Boolean(state.voicePreparing||state.voicePrerenderRequestId)});cancelVoiceOnPageExit();});
   document.addEventListener('visibilitychange',()=>activity(document.hidden?'page_became_hidden':'page_became_visible',{has_answer:Boolean(state.lastAnswer)}));
   document.addEventListener('click',(event)=>{const button=event.target.closest('button');if(button&&!button.disabled&&!button.closest('#fetch-companion'))pulseFetchCompanion();},true);
   document.querySelectorAll('[data-go]').forEach((button)=>button.addEventListener('click',()=>showScene(button.dataset.go,'navigation_button')));
@@ -1724,9 +1793,11 @@ function bindEvents(){
   byId('quiz-open').addEventListener('click',openQuiz);byId('quiz-close').addEventListener('click',()=>byId('quiz-dialog').close());byId('quiz-reveal').addEventListener('click',revealQuiz);byId('quiz-next').addEventListener('click',openQuiz);
   byId('voice-question').addEventListener('click',()=>state.speechRecognition?.start());byId('speak-answer').addEventListener('click',speakAnswer);byId('stop-speaking').addEventListener('click',stopSpeaking);byId('compare-answer').addEventListener('click',compareAnswers);byId('feedback-up').addEventListener('click',()=>sendFeedback('up'));byId('clear-answer').addEventListener('click',clearAnswer);
   byId('record-start').addEventListener('click',startRecording);byId('record-pause').addEventListener('click',pauseRecording);byId('record-stop').addEventListener('click',stopRecording);
+  document.querySelectorAll('input[name="record-mode"]').forEach((input)=>input.addEventListener('change',()=>{const conversation=byId('record-mode-conversation').checked;byId('record-conversation-consent-card').hidden=!conversation;if(!conversation)byId('record-conversation-consent').checked=false;}));
+  document.querySelectorAll('input[name="import-mode"]').forEach((input)=>input.addEventListener('change',()=>{const conversation=byId('import-mode-conversation').checked;byId('import-conversation-consent-card').hidden=!conversation;if(!conversation)byId('import-conversation-consent').checked=false;}));
   byId('record-seal').addEventListener('change',(event)=>{byId('record-seal-date-field').hidden=!event.currentTarget.checked;});
   byId('record-retry').addEventListener('click',retrySavingRecording);
-  byId('memory-search').addEventListener('input',renderActiveMemoriesView);byId('memory-save').addEventListener('click',saveMemory);
+  byId('memory-search').addEventListener('input',searchMemoryLibrary);byId('memory-save').addEventListener('click',saveMemory);byId('memory-dialog').addEventListener('close',()=>{const audio=byId('memory-audio');audio.pause();audio.removeAttribute('src');audio.load();});
   byId('memory-view-grid').addEventListener('click',()=>setMemoriesView('grid'));byId('memory-view-timeline').addEventListener('click',()=>setMemoriesView('timeline'));
   setupMemoryImport();
   byId('speaker-review-close').addEventListener('click',()=>byId('speaker-review-dialog').close());byId('speaker-review-save').addEventListener('click',saveSpeakerReview);

@@ -60,6 +60,21 @@ def test_stitching_adds_faded_pause_and_applies_speed():
     assert np.allclose(normal[2400:4200], 0)
 
 
+def test_pitch_preserving_speed_change_keeps_dominant_tone():
+    sample_rate = 24000
+    seconds = 1.0
+    time = np.arange(int(sample_rate * seconds), dtype=np.float32) / sample_rate
+    source = np.sin(2 * np.pi * 220 * time).astype(np.float32)
+
+    faster = bridge.time_stretch_wsola(source, sample_rate, 1.2)
+    spectrum = np.abs(np.fft.rfft(faster))
+    frequencies = np.fft.rfftfreq(faster.size, 1 / sample_rate)
+    dominant = float(frequencies[int(np.argmax(spectrum))])
+
+    assert faster.size == int(source.size / 1.2)
+    assert dominant == pytest.approx(220, abs=8)
+
+
 def test_synthesis_batches_and_reuses_cached_wav(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, 'ALLOWED_REFERENCE_ROOT', tmp_path.resolve())
     reference = tmp_path / 'reference.wav'

@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from services import storage
 from services.storage import (
     atomic_write_text,
     create_session_dir,
@@ -26,6 +27,28 @@ def test_session_creation_is_unique_and_versioned():
 def test_safe_session_path_rejects_traversal():
     with pytest.raises(ValueError):
         safe_session_dir('../outside')
+
+
+def test_processing_state_update_retries_a_transient_external_volume_miss(monkeypatch):
+    _, session = create_session_dir('Transient state visibility')
+    real_load_json = storage.load_json
+    attempts = 0
+
+    def intermittently_missing(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise FileNotFoundError(path)
+        return real_load_json(path)
+
+    monkeypatch.setattr(storage, 'load_json', intermittently_missing)
+
+    storage.update_processing_state(session, upload_status='receiving')
+
+    state = json.loads(session_paths(session)['state'].read_text())
+    assert attempts == 3
+    assert state['recorded'] is True
+    assert state['upload_status'] == 'receiving'
 
 
 def test_transcript_revision_preserves_previous_text():

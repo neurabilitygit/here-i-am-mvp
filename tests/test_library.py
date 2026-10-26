@@ -146,13 +146,13 @@ def test_list_sessions_omits_sealed_sessions_until_unlock_date_passes():
     assert not any(item.session_id == session.name for item in sealed_sessions())
 
 
-def test_session_summary_treats_non_string_unlock_at_as_unsealed():
+def test_session_summary_treats_non_string_unlock_at_as_sealed():
     ensure_directories()
     _, session = create_session_dir('Non-string unlock test')
     update_processing_state(session, unlock_at=12345)
     summary = session_summary(session)
-    assert summary.sealed is False
-    assert any(item.session_id == session.name for item in list_sessions())
+    assert summary.sealed is True
+    assert not any(item.session_id == session.name for item in list_sessions())
 
 
 def test_session_summary_redacts_ai_derived_fields_while_sealed():

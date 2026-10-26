@@ -3,8 +3,8 @@ const byId = (id) => document.getElementById(id);
 const pageId = globalThis.crypto?.randomUUID?.() || `page-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const state = {
-  preferences: null, sessions: [], activeSessionId: null,
-  lastQuestion: '', lastAnswer: '', lastMode: '', lastProvider: '',
+  preferences: null, sessions: [], activeSessionId: null, activeSessionRecordingMode: 'solo',
+  lastQuestion: '', lastAnswer: '', lastMode: '', lastProvider: '', lastSources: [],
   cloudConfigured: false, cloudKeySource: 'none', runtimeCloudKeyAllowed: false,
   providerStatus: null, voice: null,
   mediaRecorder: null, mediaStream: null, recordedChunks: [], recordStartedAt: 0,
@@ -25,7 +25,7 @@ const state = {
   fetchStartedAt: 0, fetchPoint: null, fetchMotionActive: false, fetchLoopRunning: false,
   fetchAnimations: [], fetchSitTimer: null, fetchSitResolve: null,
   activityFetchHeld: false, voiceFetchHeld: false,
-  memoryBatch: null, batchWatching: false, batchPollTimer: null, memoriesView: 'grid', activeQuizPrompt: null, recordSession: 0, uploadInFlight: false,
+  memoryBatch: null, batchWatching: false, batchPollTimer: null, memoriesView: 'grid', memorySearchResults: null, memorySearchTimer: null, activeQuizPrompt: null, recordSession: 0, uploadInFlight: false,
   speakers: [], activeSpeakerId: null, activeSpeakerReviewId: null,
   pageId, activitySequence: 0, chatRequestId: null,
 };

@@ -17,10 +17,10 @@ from slugify import slugify
 from config import settings
 from models.schemas import SpeakerCreate, SpeakerProfile
 from services.preferences import cloud_api_key
-from services.storage import atomic_write_text, load_json, save_json, session_lock, session_paths, update_processing_state
+from services.storage import atomic_write_bytes, atomic_write_text, load_json, save_json, session_lock, session_paths, update_processing_state
 
 
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 SUPPORTED_REFERENCE_SECONDS = (2.0, 10.0)
 
 
@@ -81,6 +81,7 @@ def _public_profile(record: dict[str, Any]) -> SpeakerProfile:
             item.get('photo_id') == record.get('active_source_photo_id') and Path(item.get('path', '')).exists()
             for item in record.get('source_photos', [])
         ),
+        voice_matching_consented=bool((record.get('voice_reference_consent') or {}).get('consented')),
         created_at=record['created_at'],
         updated_at=record['updated_at'],
     )
@@ -130,9 +131,16 @@ def create_speaker(payload: SpeakerCreate) -> SpeakerProfile:
             'display_name': display_name,
             'default_role': payload.default_role,
             'voice_reference_path': None,
+            'voice_reference_consent': {
+                'consented': False,
+                'consented_at': None,
+                'revoked_at': None,
+                'disclosure_version': '1.0',
+            },
             'active_avatar_id': None,
             'avatars': [],
             'source_photos': [],
+            'assignment_keys': [],
             'created_at': created_at,
             'updated_at': created_at,
         }
@@ -140,6 +148,62 @@ def create_speaker(payload: SpeakerCreate) -> SpeakerProfile:
         _save_registry(registry)
     (Path(settings.speakers_dir) / speaker_id).mkdir(parents=True, exist_ok=True)
     return _public_profile(record)
+
+
+def _resolve_assignment_speakers(session_id: str, assignments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Resolve all speakers in one registry commit with retry-safe new identities."""
+    resolved: dict[str, dict[str, Any]] = {}
+    changed = False
+    with _registry_lock():
+        registry = _load_registry()
+        records_by_id = {record.get('speaker_id'): record for record in registry['speakers']}
+        existing_ids = set(records_by_id)
+        for item in assignments:
+            cluster_id = item['cluster_id']
+            assignment_key = f'{session_id}:{cluster_id}'
+            speaker_id = item.get('speaker_id')
+            if speaker_id:
+                record = records_by_id.get(speaker_id)
+                if record is None:
+                    raise SpeakerWorkflowError('A selected speaker no longer exists')
+            else:
+                record = next(
+                    (candidate for candidate in registry['speakers'] if assignment_key in candidate.get('assignment_keys', [])),
+                    None,
+                )
+                if record is None:
+                    display_name = ' '.join(str(item.get('display_name') or '').split())
+                    stem = slugify(display_name)[:48] or 'speaker'
+                    speaker_id = stem
+                    if speaker_id in existing_ids:
+                        speaker_id = f'{stem}-{uuid.uuid5(uuid.NAMESPACE_URL, assignment_key).hex[:6]}'
+                    created_at = _now()
+                    record = {
+                        'speaker_id': speaker_id,
+                        'display_name': display_name,
+                        'default_role': item['role'],
+                        'voice_reference_path': None,
+                        'voice_reference_consent': {
+                            'consented': False,
+                            'consented_at': None,
+                            'revoked_at': None,
+                            'disclosure_version': '1.0',
+                        },
+                        'active_avatar_id': None,
+                        'avatars': [],
+                        'source_photos': [],
+                        'assignment_keys': [assignment_key],
+                        'created_at': created_at,
+                        'updated_at': created_at,
+                    }
+                    registry['speakers'].append(record)
+                    records_by_id[speaker_id] = record
+                    existing_ids.add(speaker_id)
+                    changed = True
+            resolved[cluster_id] = dict(record)
+        if changed:
+            _save_registry(registry)
+    return resolved
 
 
 def safe_speaker_id(speaker_id: str) -> str:
@@ -163,6 +227,9 @@ def _known_speaker_references() -> list[tuple[str, str]]:
             break
         record = get_speaker_record(profile.speaker_id)
         path_value = record.get('voice_reference_path')
+        consent = record.get('voice_reference_consent') or {}
+        if not consent.get('consented'):
+            continue
         if not path_value:
             continue
         path = Path(path_value)
@@ -271,6 +338,9 @@ def diarize_conversation(session_path: Path) -> dict[str, Any]:
         raise SpeakerWorkflowError('The recording audio is missing')
     if settings.speaker_diarization_provider == 'disabled':
         raise SpeakerWorkflowError('Conversation speaker recognition is not configured')
+    state = load_json(paths['state']) if paths['state'].exists() else {}
+    if not state.get('conversation_cloud_consented'):
+        raise SpeakerWorkflowError('Cloud speaker recognition permission has not been recorded for this conversation')
     api_key, _ = cloud_api_key()
     if not api_key:
         raise SpeakerWorkflowError('OpenAI speaker recognition is not configured')
@@ -451,31 +521,25 @@ def apply_speaker_assignments(session_path: Path, assignments_payload: list[dict
         raise SpeakerWorkflowError('Every detected voice must be assigned exactly once')
     if sum(item.get('role') == 'memory_subject' for item in assignments_payload) != 1:
         raise SpeakerWorkflowError('Choose exactly one memory subject for this conversation')
-    known_records: dict[str, dict[str, Any]] = {}
     for item in assignments_payload:
         speaker_id = item.get('speaker_id')
         if speaker_id:
-            known_records[speaker_id] = get_speaker_record(speaker_id)
+            get_speaker_record(speaker_id)
         elif not ' '.join(str(item.get('display_name') or '').split()):
             raise SpeakerWorkflowError('A name is required for every new voice')
 
+    speaker_records = _resolve_assignment_speakers(session_path.name, assignments_payload)
     resolved: dict[str, dict[str, Any]] = {}
     for item in assignments_payload:
-        speaker_id = item.get('speaker_id')
-        if speaker_id:
-            record = known_records[speaker_id]
-            display_name = record['display_name']
-        else:
-            display_name = ' '.join(str(item.get('display_name') or '').split())
-            if not display_name:
-                raise SpeakerWorkflowError('A name is required for every new voice')
-            profile = create_speaker(SpeakerCreate(display_name=display_name, default_role=item['role']))
-            speaker_id = profile.speaker_id
+        record = speaker_records[item['cluster_id']]
+        speaker_id = record['speaker_id']
+        display_name = record['display_name']
         resolved[item['cluster_id']] = {
             'cluster_id': item['cluster_id'],
             'speaker_id': speaker_id,
             'display_name': display_name,
             'role': item['role'],
+            'retain_voice_reference': bool(item.get('retain_voice_reference')),
         }
     roles_by_speaker: dict[str, set[str]] = {}
     for item in resolved.values():
@@ -515,6 +579,19 @@ def apply_speaker_assignments(session_path: Path, assignments_payload: list[dict
         record = get_speaker_record(assignment['speaker_id'])
         if record.get('default_role') == 'other':
             record = update_speaker_record(assignment['speaker_id'], default_role=assignment['role'])
+        if not assignment.get('retain_voice_reference'):
+            continue
+        consent = record.get('voice_reference_consent') or {}
+        if not consent.get('consented'):
+            record = update_speaker_record(
+                assignment['speaker_id'],
+                voice_reference_consent={
+                    'consented': True,
+                    'consented_at': _now(),
+                    'revoked_at': None,
+                    'disclosure_version': '1.0',
+                },
+            )
         if record.get('voice_reference_path') and Path(record['voice_reference_path']).exists():
             continue
         reference = _extract_reference(
@@ -531,6 +608,62 @@ def apply_speaker_assignments(session_path: Path, assignments_payload: list[dict
         'memory_unit_count': len(units),
         'assignments': list(resolved.values()),
     }
+
+
+def revise_conversation_transcript(session_path: Path, transcript: str, reason: str) -> dict[str, Any]:
+    """Revise reviewed turn text while preserving labels and prior artifacts."""
+    paths = session_paths(session_path)
+    if not paths['transcript_turns'].exists() or not paths['speaker_assignments'].exists():
+        raise SpeakerWorkflowError('This conversation has not completed speaker review')
+    assignments = load_json(paths['speaker_assignments']).get('assignments', [])
+    assignment_by_cluster = {item['cluster_id']: item for item in assignments}
+    paragraphs = [value.strip() for value in re.split(r'\n\s*\n', transcript.strip()) if value.strip()]
+    revised_turns: list[dict[str, Any]] = []
+    original_turns = load_json(paths['transcript_turns']).get('turns', [])
+    if len(paragraphs) != len(original_turns):
+        raise SpeakerWorkflowError('Keep one labeled paragraph for every conversation turn')
+    for index, (paragraph, original) in enumerate(zip(paragraphs, original_turns), start=1):
+        assignment = assignment_by_cluster.get(original.get('cluster_id'))
+        if assignment is None:
+            raise SpeakerWorkflowError('A reviewed speaker assignment is missing')
+        prefix = f"**{assignment['display_name']}:**"
+        if not paragraph.startswith(prefix):
+            raise SpeakerWorkflowError('Speaker labels must remain in their original order; use voice review to reassign a speaker')
+        text = paragraph[len(prefix):].strip()
+        if not text:
+            raise SpeakerWorkflowError(f'Turn {index} needs spoken words after its label')
+        revised_turns.append({**original, 'text': ' '.join(text.split())})
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    revision_root = session_path / 'conversation.revisions' / stamp
+    with session_lock(session_path.name):
+        revision_root.mkdir(parents=True, exist_ok=False)
+        for source in (paths['transcript_turns'], paths['speaker_assignments'], paths['memory_units'], paths['transcript']):
+            if source.exists():
+                target = revision_root / source.name
+                atomic_write_bytes(target, source.read_bytes())
+        save_json(revision_root / 'revision.json', {'created_at': _now(), 'reason': reason})
+        save_json(paths['transcript_turns'], {'schema_version': 1, 'turns': revised_turns})
+    result = apply_speaker_assignments(session_path, assignments)
+    return {**result, 'revision_id': stamp}
+
+
+def revoke_speaker_voice_reference(speaker_id: str) -> SpeakerProfile:
+    """Stop future matching and remove only the derived voice reference."""
+    record = get_speaker_record(speaker_id)
+    reference = record.get('voice_reference_path')
+    if reference:
+        Path(reference).unlink(missing_ok=True)
+    updated = update_speaker_record(
+        speaker_id,
+        voice_reference_path=None,
+        voice_reference_consent={
+            'consented': False,
+            'consented_at': (record.get('voice_reference_consent') or {}).get('consented_at'),
+            'revoked_at': _now(),
+            'disclosure_version': '1.0',
+        },
+    )
+    return _public_profile(updated)
 
 
 def speaker_sample(session_path: Path, cluster_id: str) -> Path:

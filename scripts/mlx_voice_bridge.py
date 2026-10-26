@@ -23,6 +23,7 @@ MODEL_ID = os.environ.get(
     'QWEN_TTS_MLX_MODEL',
     'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16',
 )
+MODEL_REVISION = os.environ.get('QWEN_TTS_MODEL_REVISION', '').strip()
 STREAMING_INTERVAL = float(os.environ.get('QWEN_TTS_STREAMING_INTERVAL', '0.8'))
 SENTENCE_BATCH_SIZE = max(2, min(4, int(os.environ.get('QWEN_TTS_SENTENCE_BATCH_SIZE', '2'))))
 WATCHDOG_SECONDS = max(30, min(120, int(os.environ.get('QWEN_TTS_WATCHDOG_SECONDS', '110'))))
@@ -54,6 +55,7 @@ _active_segments_total = 0
 _active_segments_complete = 0
 _reference_cache_signature: tuple[str, int, int] | None = None
 _reference_cache_audio = None
+_revoke_pending = False
 
 
 @app.middleware('http')
@@ -86,8 +88,13 @@ def load_model():
     with _model_lock:
         if _model is None:
             from mlx_audio.tts.utils import load_model as mlx_load_model
+            model_source = MODEL_ID
+            if MODEL_REVISION and not Path(MODEL_ID).expanduser().exists():
+                # Resolve a mutable Hub name to an immutable local snapshot.
+                from huggingface_hub import snapshot_download
 
-            _model = mlx_load_model(MODEL_ID)
+                model_source = snapshot_download(repo_id=MODEL_ID, revision=MODEL_REVISION)
+            _model = mlx_load_model(model_source)
         return _model
 
 
@@ -188,13 +195,56 @@ def stitch_audio(segments: list[np.ndarray], sample_rate: int, speed: float = 1.
         values.append(np.asarray(audio, dtype=np.float32).reshape(-1))
     combined = np.concatenate(values) if values else np.zeros(0, dtype=np.float32)
     if combined.size and abs(speed - 1.0) > 0.01:
-        new_size = max(1, int(combined.size / speed))
-        combined = np.interp(
-            np.linspace(0, combined.size - 1, new_size),
-            np.arange(combined.size),
-            combined,
-        ).astype(np.float32)
+        combined = time_stretch_wsola(combined, sample_rate, speed)
     return combined
+
+
+def time_stretch_wsola(audio: np.ndarray, sample_rate: int, speed: float) -> np.ndarray:
+    """Change speaking speed with overlap alignment while preserving pitch."""
+    value = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if not value.size or abs(speed - 1.0) <= 0.01:
+        return value
+    frame = max(256, int(sample_rate * 0.04))
+    overlap = max(64, int(sample_rate * 0.012))
+    output_hop = frame - overlap
+    input_hop = output_hop * speed
+    search = max(32, int(sample_rate * 0.008))
+    output = np.zeros(max(frame, int(value.size / speed) + frame), dtype=np.float32)
+    weights = np.zeros_like(output)
+    window = np.hanning(frame).astype(np.float32)
+    first = value[:frame]
+    output[:first.size] += first * window[:first.size]
+    weights[:first.size] += window[:first.size]
+    input_position = 0.0
+    output_position = 0
+    while output_position + frame < output.size:
+        output_position += output_hop
+        target = int(round(input_position + input_hop))
+        if target + frame >= value.size:
+            break
+        reference = output[output_position:output_position + overlap]
+        best = target
+        best_score = float('-inf')
+        step = max(1, search // 12)
+        for candidate in range(max(0, target - search), min(value.size - frame, target + search) + 1, step):
+            proposed = value[candidate:candidate + overlap]
+            score = float(np.dot(reference, proposed) / (np.linalg.norm(reference) * np.linalg.norm(proposed) + 1e-8))
+            if score > best_score:
+                best_score = score
+                best = candidate
+        segment = value[best:best + frame]
+        end = output_position + segment.size
+        output[output_position:end] += segment * window[:segment.size]
+        weights[output_position:end] += window[:segment.size]
+        input_position = float(best)
+    active = weights > 1e-6
+    output[active] /= weights[active]
+    used = np.flatnonzero(active)
+    stretched = output[:used[-1] + 1] if used.size else value
+    target_size = max(1, int(value.size / speed))
+    if stretched.size >= target_size:
+        return stretched[:target_size]
+    return np.pad(stretched, (0, target_size - stretched.size))
 
 
 def cache_key(request: SynthesisRequest) -> str:
@@ -203,6 +253,7 @@ def cache_key(request: SynthesisRequest) -> str:
     material = '\n'.join((
         CACHE_SCHEMA_VERSION,
         MODEL_ID,
+        MODEL_REVISION,
         request.text.strip(),
         request.reference_text.strip(),
         f'{request.speed:.3f}',
@@ -379,8 +430,22 @@ def finish_generation(request_id: str) -> None:
             _active_segments_total = 0
             _active_segments_complete = 0
             should_release = True
+    if should_release and _revoke_pending:
+        purge_voice_identity()
     if should_release:
         _generation_lock.release()
+
+
+def purge_voice_identity() -> None:
+    """Remove derived speech files and release cached speaker conditioning."""
+    global _reference_cache_signature, _reference_cache_audio, _revoke_pending
+    _reference_cache_signature = None
+    _reference_cache_audio = None
+    if CACHE_DIR:
+        root = Path(CACHE_DIR)
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+    _revoke_pending = False
 
 
 @app.get('/health')
@@ -397,6 +462,7 @@ def health():
         'build_commit': APP_BUILD_COMMIT,
         'engine': 'qwen3-tts-mlx',
         'model': MODEL_ID,
+        'model_revision': MODEL_REVISION or 'un-pinned',
         'model_loaded': _model is not None,
         'device': 'mlx',
         'streaming': True,
@@ -413,6 +479,7 @@ def health():
         'active_cache_key': active_cache_key,
         'segments_total': segments_total,
         'segments_complete': segments_complete,
+        'revocation_pending': _revoke_pending,
     }
 
 
@@ -447,6 +514,25 @@ def clear_cache():
         return {'status': 'cleared'}
     finally:
         _generation_lock.release()
+
+
+@app.post('/identity/revoke')
+def revoke_identity():
+    global _revoke_pending, _reference_cache_signature, _reference_cache_audio
+    _revoke_pending = True
+    _reference_cache_signature = None
+    _reference_cache_audio = None
+    with _state_lock:
+        active = _active_request_id
+        if _active_cancel_event is not None:
+            _active_cancel_event.set()
+    if _generation_lock.acquire(blocking=False):
+        try:
+            purge_voice_identity()
+        finally:
+            _generation_lock.release()
+        return {'status': 'revoked'}
+    return {'status': 'canceling', 'request_id': active}
 
 
 def validate_reference(request: SynthesisRequest) -> None:
@@ -487,7 +573,10 @@ def synthesize(request: SynthesisRequest):
         ]
         resumed_segments = sum(value is not None for value in completed_audio)
         mark_segments_complete(request_id, resumed_segments)
-        missing_indexes = [index for index, value in enumerate(completed_audio) if value is None]
+        missing_indexes = sorted(
+            (index for index, value in enumerate(completed_audio) if value is None),
+            key=lambda index: adaptive_token_ceiling(segments[index]),
+        )
         effective_batch_size = 1 if timeout_marker.exists() else SENTENCE_BATCH_SIZE
         started = time.monotonic()
         last_progress = started
@@ -544,9 +633,12 @@ def synthesize(request: SynthesisRequest):
         atomic_write_bytes(destination, payload)
         timeout_marker.unlink(missing_ok=True)
         trim_cache(destination.parent)
+        elapsed_seconds = max(time.monotonic() - started, 0.001)
+        audio_seconds = len(combined) / sample_rate if sample_rate else 0.0
+        real_time_factor = elapsed_seconds / audio_seconds if audio_seconds else 0.0
         logger.info(
-            'voice synthesis completed request_id=%s segments_total=%s segments_resumed=%s elapsed=%.1f bytes=%s',
-            request_id, len(segments), resumed_segments, time.monotonic() - started, len(payload),
+            'voice synthesis completed request_id=%s segments_total=%s segments_resumed=%s elapsed=%.1f bytes=%s real_time_factor=%.3f',
+            request_id, len(segments), resumed_segments, elapsed_seconds, len(payload), real_time_factor,
         )
         return Response(
             payload,
@@ -560,6 +652,9 @@ def synthesize(request: SynthesisRequest):
                 'X-Voice-Segments-Resumed': str(resumed_segments),
                 'X-Voice-Segment-Cache': 'hit' if resumed_segments else 'miss',
                 'X-Voice-Batch-Size': str(effective_batch_size),
+                'X-Voice-Elapsed-Seconds': f'{elapsed_seconds:.3f}',
+                'X-Voice-Audio-Seconds': f'{audio_seconds:.3f}',
+                'X-Voice-Real-Time-Factor': f'{real_time_factor:.3f}',
             },
         )
     except HTTPException as exc:
