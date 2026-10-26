@@ -389,6 +389,9 @@ def begin_generation(request_id: str, key: str, segments_total: int) -> tuple[st
     global _active_cache_key, _active_segments_total, _active_segments_complete
     if not _generation_lock.acquire(blocking=False):
         return None
+    if _revoke_pending:
+        _generation_lock.release()
+        raise HTTPException(status_code=409, detail='Voice cleanup must complete before another answer')
     identifier = request_id or uuid.uuid4().hex
     cancel_event = threading.Event()
     with _state_lock:
@@ -430,20 +433,29 @@ def finish_generation(request_id: str) -> None:
             _active_segments_total = 0
             _active_segments_complete = 0
             should_release = True
-    if should_release and _revoke_pending:
-        purge_voice_identity()
     if should_release:
-        _generation_lock.release()
+        try:
+            if _revoke_pending:
+                purge_voice_identity()
+        finally:
+            _generation_lock.release()
 
 
 def purge_voice_identity() -> None:
     """Remove derived speech files and release cached speaker conditioning."""
-    global _reference_cache_signature, _reference_cache_audio, _revoke_pending
+    global _reference_cache_signature, _reference_cache_audio, _revoke_pending, _model
     _reference_cache_signature = None
     _reference_cache_audio = None
+    with _model_lock:
+        if _model is not None:
+            internal_cache = getattr(_model, '_icl_cache', None)
+            if internal_cache is not None:
+                internal_cache.clear()
+            _model = None
     if CACHE_DIR:
         root = Path(CACHE_DIR)
-        shutil.rmtree(root, ignore_errors=True)
+        if root.exists():
+            shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
     _revoke_pending = False
 
@@ -494,11 +506,16 @@ def cancel(request_id: str):
 
 @app.post('/warm')
 def warm():
+    generation = begin_generation('', 'warm', 0)
+    if generation is None:
+        raise HTTPException(status_code=409, detail='The local voice is busy')
     try:
         load_model()
         return {'status': 'ready', 'model': MODEL_ID}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        finish_generation(generation[0])
 
 
 @app.post('/cache/clear')
@@ -548,21 +565,24 @@ def synthesize(request: SynthesisRequest):
     validate_reference(request)
     key = cache_key(request)
     destination = cache_path(request, key)
-    if destination.exists() and destination.stat().st_size > 44:
-        destination.touch()
-        return Response(
-            destination.read_bytes(), media_type='audio/wav',
-            headers={'X-Voice-Engine':'qwen3-tts-mlx','X-Voice-Cache':'hit','X-Voice-Cache-Key':key},
-        )
     segments = sentence_segments(request.text)
     generation = begin_generation(request.request_id, key, len(segments))
     if generation is None:
         raise HTTPException(status_code=409, detail='The local voice is already preparing another answer')
     request_id, cancel_event = generation
-    trim_cache(destination.parent)
     segment_directory = segment_cache_dir(request, key)
     timeout_marker = segment_directory / '.retry-single'
     try:
+        if destination.exists() and destination.stat().st_size > 44:
+            destination.touch()
+            payload = destination.read_bytes()
+            if cancel_event.is_set():
+                raise HTTPException(status_code=409, detail='Voice preparation was canceled')
+            return Response(
+                payload, media_type='audio/wav',
+                headers={'X-Voice-Engine':'qwen3-tts-mlx','X-Voice-Cache':'hit','X-Voice-Cache-Key':key},
+            )
+        trim_cache(destination.parent)
         model = load_model()
         reference_audio = cached_reference_audio(request.reference_audio, int(model.sample_rate))
         sample_rate = int(model.sample_rate)

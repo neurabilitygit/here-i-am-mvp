@@ -85,6 +85,15 @@ def chroma_collection(name: str | None = None):
     return _collections[collection_name]
 
 
+def chroma_collections_for_backup():
+    """Enumerate every collection without removing or rewriting any records."""
+    chroma_collection()  # Initialize the shared embedded client.
+    return [
+        _chroma_client.get_collection(name=item if isinstance(item, str) else item.name)
+        for item in _chroma_client.list_collections()
+    ]
+
+
 def normalize_chroma_value(value):
     if isinstance(value, list):
         return ", ".join(str(v) for v in value)
@@ -1654,6 +1663,7 @@ END_UNTRUSTED_MEMORY_JSON
 GROUNDING_ENTITY_EXEMPTIONS = {
     'i', 'yes', 'no', 'the', 'this', 'that', 'my', 'we', 'our', 'it', 'when', 'while',
     'because', 'although', 'after', 'before', 'later', 'one', 'another', 'here', 'there',
+    'as', 'at', 'in', 'on', 'during', 'sometimes', 'usually', 'then', 'also',
 }
 
 
@@ -1667,7 +1677,8 @@ def ground_personal_answer(prepared: PreparedAnswer, answer: str) -> tuple[str, 
     """
     if prepared.mode == 'GENERAL' or not answer.strip():
         return answer, True, []
-    corpus = f'{prepared.question}\n{prepared.evidence_text}'.lower()
+    # A question can itself introduce an unsupported name or date.
+    corpus = prepared.evidence_text.lower()
     reasons: list[str] = []
     lowered = answer.lower()
     if any(marker in lowered for marker in (
@@ -1675,15 +1686,18 @@ def ground_personal_answer(prepared: PreparedAnswer, answer: str) -> tuple[str, 
         'developed by openai', 'created by openai', 'google deepmind', 'created by google',
     )):
         reasons.append('model_identity')
-    for number in set(re.findall(r'\b\d+(?:[.,]\d+)?\b', answer)):
-        if number.lower() not in corpus:
+    numeric_pattern = r'\b\d+(?:,\d{3})*(?:\.\d+)?\b'
+    from decimal import Decimal
+    evidence_numbers = {Decimal(value.replace(',', '')) for value in re.findall(numeric_pattern, corpus)}
+    for number in set(re.findall(numeric_pattern, answer)):
+        if Decimal(number.replace(',', '')) not in evidence_numbers:
             reasons.append(f'unsupported_number:{number}')
     for sentence in re.split(r'(?<=[.!?])\s+', answer.strip()):
         for match in re.finditer(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', sentence):
             entity = match.group(0)
-            if match.start() == 0 or entity.lower() in GROUNDING_ENTITY_EXEMPTIONS:
+            if entity.lower() in GROUNDING_ENTITY_EXEMPTIONS:
                 continue
-            if entity.lower() not in corpus:
+            if not re.search(r'(?<!\w)' + re.escape(entity.lower()) + r'(?!\w)', corpus):
                 reasons.append(f'unsupported_entity:{entity}')
     if reasons:
         return "I don't know the answer based on what I've recorded.", False, sorted(set(reasons))

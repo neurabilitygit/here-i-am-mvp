@@ -795,6 +795,7 @@ function updateSpeakButton() {
   button.setAttribute('aria-label', preparing ? 'Preparing voice' : ready ? 'Ready—play this answer' : 'Prepare and play this answer');
   label.textContent = preparing ? 'Preparing' : ready ? 'Ready—Play' : 'Play';
   const stopButton = byId('stop-speaking');
+  if (!preparing && !state.voicePlaying) stopButton.hidden = true;
   if (state.voicePlaying) {
     stopButton.hidden = false;
     stopButton.setAttribute('aria-label', 'Playing — stop speaking');
@@ -973,6 +974,7 @@ async function speakAnswer() {
     activity('voice_prepare_completed', {request_id: requestId, bytes: Number(response.headers.get('content-length')) || 0, duration_ms: Math.round(performance.now() - startedAt), automatic: false, generation: answerGeneration});
     if (isIOSPlaybackDevice()) {
       const blob = await response.blob();
+      if (state.voiceRequestId !== requestId || state.chatGeneration !== answerGeneration || state.lastAnswer !== answerText) return;
       if (!blob.size) throw new Error('The voice engine returned an empty audio file');
       state.voicePrerenderText = answerText;
       state.voicePrerenderGeneration = answerGeneration;
@@ -983,6 +985,7 @@ async function speakAnswer() {
     }
     await playVoiceFile(response);
   } catch (error) {
+    if (state.voiceRequestId !== requestId) return;
     activity('voice_prepare_failed', {request_id: requestId, error_name: error.name || 'Error', duration_ms: Math.round(performance.now() - startedAt), automatic: false});
     const message = error.name === 'AbortError'
       ? (state.voiceStoppedByUser
@@ -993,11 +996,11 @@ async function speakAnswer() {
     byId('stop-speaking').hidden = true;
     updateSpeakButton();
   } finally {
-    if (state.voiceFetchHeld) { state.voiceFetchHeld = false; endFetchTask(); }
-    window.clearTimeout(state.voiceTimeout);
-    state.voiceTimeout = null;
-    state.voicePreparing = false;
     if (state.voiceRequestId === requestId) {
+      if (state.voiceFetchHeld) { state.voiceFetchHeld = false; endFetchTask(); }
+      window.clearTimeout(state.voiceTimeout);
+      state.voiceTimeout = null;
+      state.voicePreparing = false;
       state.voiceAbort = null;
       state.voiceRequestId = null;
       state.voiceAnswerText = '';
@@ -1014,6 +1017,13 @@ function stopSpeaking() {
   if (state.voicePreparing || state.voicePlaying) state.voiceStoppedByUser = true;
   if (state.voicePreparing) state.voiceAbort?.abort();
   state.voiceAbort?.abort();
+  state.voiceAbort = null;
+  state.voiceRequestId = null;
+  state.voicePreparing = false;
+  state.voiceAnswerText = '';
+  state.voiceGeneration = 0;
+  window.clearTimeout(state.voiceTimeout);
+  state.voiceTimeout = null;
   if (requestId) fetch(`/api/voice/cancel/${encodeURIComponent(requestId)}`, {method:'POST', keepalive:true}).catch(()=>{});
   state.voiceSources.forEach((source) => { try { source.stop(); } catch (_) {} });
   state.voiceSources = [];

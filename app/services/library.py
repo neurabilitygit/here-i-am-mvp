@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import shutil
 import tempfile
 import zipfile
@@ -381,17 +383,21 @@ def _create_structured_backup_unlocked(progress: Callable[[int, int, str], None]
     manifest: list[dict] = []
 
     def source_files(source_root: Path) -> list[Path]:
-        if not source_root.exists():
+        try:
+            source_root.stat()
+        except FileNotFoundError:
             return []
         files: list[Path] = []
-        for source in sorted(source_root.rglob('*')):
-            if source.name.startswith('._'):
-                continue
-            try:
-                if source.is_file():
+        def fail(error):
+            raise error
+        for directory, dirs, names in os.walk(source_root, onerror=fail):
+            dirs[:] = sorted(name for name in dirs if not name.startswith('._'))
+            for name in sorted(names):
+                if name.startswith('._'):
+                    continue
+                source = Path(directory) / name
+                if stat.S_ISREG(source.stat().st_mode):
                     files.append(source)
-            except OSError:
-                continue
         return files
 
     authoritative_files = [
@@ -409,18 +415,19 @@ def _create_structured_backup_unlocked(progress: Callable[[int, int, str], None]
     }
     appdata_files: list[Path] = []
     for source in source_files(appdata):
-        try:
-            resolved = source.resolve()
-            if any(resolved == excluded or excluded in resolved.parents for excluded in excluded_roots):
-                continue
-        except OSError:
+        resolved = source.resolve()
+        if any(resolved == excluded or excluded in resolved.parents for excluded in excluded_roots):
             continue
         appdata_files.append(source)
 
-    from services.pipeline import chroma_collection
+    from services.pipeline import chroma_collections_for_backup
 
-    collection = chroma_collection()
-    vector_count = collection.count()
+    collections = chroma_collections_for_backup()
+    collection_manifest = [
+        {'name': collection.name, 'metadata': collection.metadata, 'count': collection.count()}
+        for collection in collections
+    ]
+    vector_count = sum(item['count'] for item in collection_manifest)
     total_items = len(authoritative_files) + len(appdata_files) + vector_count
     processed = 0
 
@@ -437,6 +444,8 @@ def _create_structured_backup_unlocked(progress: Callable[[int, int, str], None]
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         digest = _sha256_file(destination)
+        if digest != _sha256_file(source):
+            raise RuntimeError(f'Backup source changed during copy: {relative}')
         manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': digest})
         processed += 1
         report(f'Copied {relative}')
@@ -445,6 +454,8 @@ def _create_structured_backup_unlocked(progress: Callable[[int, int, str], None]
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+        if _sha256_file(destination) != _sha256_file(source):
+            raise RuntimeError(f'Backup source changed during copy: {relative}')
         manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': _sha256_file(destination)})
         processed += 1
         report(f'Copied {relative}')
@@ -453,28 +464,34 @@ def _create_structured_backup_unlocked(progress: Callable[[int, int, str], None]
     vector_export.parent.mkdir(parents=True, exist_ok=True)
     with vector_export.open('w', encoding='utf-8') as handle:
         page_size = 128
-        for offset in range(0, vector_count, page_size):
-            vector_data = collection.get(
-                limit=min(page_size, vector_count - offset),
-                offset=offset,
-                include=['documents', 'metadatas', 'embeddings'],
-            )
-            vector_documents = vector_data.get('documents') or []
-            vector_metadatas = vector_data.get('metadatas') or []
-            vector_embeddings = vector_data.get('embeddings')
-            for index, identifier in enumerate(vector_data.get('ids') or []):
-                embedding = vector_embeddings[index]
-                record = {
-                    'id': identifier,
-                    'document': vector_documents[index],
-                    'metadata': vector_metadatas[index],
-                    'embedding': embedding.tolist() if hasattr(embedding, 'tolist') else embedding,
-                }
-                handle.write(json.dumps(record, ensure_ascii=False) + '\n')
-                processed += 1
-            report(f'Exported {min(offset + page_size, vector_count)} of {vector_count} Chroma records')
+        for collection, descriptor in zip(collections, collection_manifest):
+            exported = 0
+            for offset in range(0, descriptor['count'], page_size):
+                vector_data = collection.get(
+                    limit=min(page_size, descriptor['count'] - offset), offset=offset,
+                    include=['documents', 'metadatas', 'embeddings'],
+                )
+                ids = vector_data.get('ids') or []
+                documents = vector_data.get('documents')
+                metadatas = vector_data.get('metadatas')
+                embeddings = vector_data.get('embeddings')
+                if len(ids) != min(page_size, descriptor['count'] - offset) or embeddings is None or len(embeddings) != len(ids):
+                    raise RuntimeError(f'Incomplete vector export: {collection.name}')
+                for index, identifier in enumerate(ids):
+                    embedding = embeddings[index]
+                    record = {
+                        'collection': collection.name, 'id': identifier,
+                        'document': documents[index] if documents is not None else None,
+                        'metadata': metadatas[index] if metadatas is not None else None,
+                        'embedding': embedding.tolist() if hasattr(embedding, 'tolist') else embedding,
+                    }
+                    handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+                    processed += 1
+                    exported += 1
+                report(f'Exported {exported} records from {collection.name}')
+            if exported != descriptor['count'] or collection.count() != exported:
+                raise RuntimeError(f'Collection changed during backup: {collection.name}')
         handle.flush()
-        import os
         os.fsync(handle.fileno())
     manifest.append({
         'path': str(vector_export.relative_to(target)),
@@ -490,10 +507,11 @@ def _create_structured_backup_unlocked(progress: Callable[[int, int, str], None]
         'created_at': datetime.now(timezone.utc).isoformat(),
         'backup_kind': 'full-rebuildable',
         'chroma_collection': settings.chroma_collection,
+        'chroma_collections': collection_manifest,
+        'backup_schema_version': 2,
         'same_volume_as_source': same_volume,
         'files': manifest,
     }, indent=2))
-    import os
     os.replace(target, final_target)
     directory_fd = os.open(backup_root, os.O_RDONLY)
     try:

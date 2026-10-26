@@ -221,7 +221,7 @@ def record_stream_audit(
     *,
     response_id: str = '',
     usage: dict | None = None,
-    grounding_supported: bool | None = None,
+    grounding_check_passed: bool | None = None,
     grounding_reasons: list[str] | None = None,
 ) -> None:
     usage = usage or {}
@@ -235,7 +235,8 @@ def record_stream_audit(
         'response_id': response_id,
         'input_tokens': usage.get('input_tokens'),
         'output_tokens': usage.get('output_tokens'),
-        'grounding_supported': grounding_supported,
+        'grounding_check_passed': grounding_check_passed,
+        'grounding_check_kind': 'deterministic_heuristic_v2',
         'grounding_reasons': (grounding_reasons or [])[:10],
     })
 

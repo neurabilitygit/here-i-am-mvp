@@ -189,6 +189,31 @@ def test_stream_sends_heartbeat_while_provider_is_working(monkeypatch):
     assert 'Ready.' in response.text
 
 
+def test_personal_stream_never_exposes_rejected_tokens(monkeypatch):
+    from services.pipeline import PreparedAnswer
+    class Provider:
+        name = 'local'
+
+        def stream(self, _prompt, *, cancel_event=None):
+            yield 'Boston was '
+            yield 'where I grew up.'
+
+    audit = {}
+    monkeypatch.setattr(main, 'provider_status', lambda: {'active_ready': True})
+    monkeypatch.setattr(main, 'active_provider', lambda: Provider())
+    monkeypatch.setattr(main, 'prepare_answer', lambda question: PreparedAnswer(
+        question=question, prompt='test', mode='PERSONAL', sources=[], retrieval_seconds=0,
+        evidence_text='I grew up in New York.',
+    ))
+    monkeypatch.setattr(main, 'record_stream_audit', lambda *args, **kwargs: audit.update(kwargs))
+    response = client.post('/api/chat/stream', json={'question': 'Tell me about childhood.'})
+    assert response.status_code == 200
+    assert 'Boston' not in response.text
+    assert "I don't know the answer based on what I've recorded." in response.text
+    assert audit['grounding_check_passed'] is False
+    assert 'grounding_supported' not in audit
+
+
 def test_stream_rejects_overlapping_answer_generation(monkeypatch):
     monkeypatch.setattr(main, 'provider_status', lambda: {'active': 'local', 'active_ready': True})
     assert main._chat_stream_lock.acquire(blocking=False)

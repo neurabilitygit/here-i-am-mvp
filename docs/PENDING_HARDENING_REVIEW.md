@@ -41,9 +41,12 @@ it is not a deployment approval or an implementation of the new local-performanc
 
 ## Repository hygiene
 
-Validation on 2026-10-26: a fresh Docker test build passed 129 backend tests;
-Ruff passed; the mobile Safari recording-retry and engagement-race suites passed
-all nine tests; `git diff --check` passed. These checks use isolated test data.
+Validation after blocker remediation on 2026-10-26: a fresh Docker test build
+passed 140 backend tests; Ruff and dependency consistency checks passed. The full
+WebKit suite passed 27 checks (16 mobile, 11 desktop); five phone-only checks
+were intentionally skipped on desktop. JavaScript syntax and `git diff --check`
+passed. The append-only scan found no Chroma deletion calls. These checks use
+isolated test data and mock voice synthesis/media where appropriate.
 They do not replace the release review above or a complete security audit.
 
 The operational checkout's untracked `.claude/` folder contains local tool

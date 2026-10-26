@@ -37,6 +37,9 @@ def test_library_summary_and_read_only_reconciliation():
 
 
 def test_structured_backup_copies_without_changing_source():
+    from services.pipeline import chroma_collection
+    migration = chroma_collection('backup-migration-test')
+    migration.add(ids=['retained-version'], embeddings=[[1.0, 0.0, 0.0]], documents=['Archived synthetic evidence'], metadatas=[{'version': 'old'}])
     _, session = create_session_dir('Backup test')
     paths = session_paths(session)
     atomic_write_text(paths['transcript'], 'synthetic')
@@ -55,6 +58,7 @@ def test_structured_backup_copies_without_changing_source():
     assert str(archived.relative_to(Path(settings.data_root))) in backed_up
     assert 'appdata/chroma-export.jsonl' in backed_up
     assert manifest['backup_kind'] == 'full-rebuildable'
+    assert any(item['name'] == migration.name and item['count'] == 1 for item in manifest['chroma_collections'])
 
     empty_restore = Path(tempfile.mkdtemp(prefix='here-i-am-empty-restore-'))
     verified = subprocess.run(
@@ -81,6 +85,29 @@ def test_structured_backup_copies_without_changing_source():
     assert restored.returncode == 0, restored.stderr
     assert (empty_restore / paths['audio'].relative_to(Path(settings.data_root))).read_bytes() == b'synthetic-original-audio'
     assert (empty_restore / archived.relative_to(Path(settings.data_root))).read_bytes() == b'archived-original-audio'
+    import chromadb
+    restored_collection = chromadb.PersistentClient(path=str(empty_restore / 'appdata/chroma')).get_collection(migration.name)
+    assert restored_collection.metadata == migration.metadata
+    assert restored_collection.get(include=['documents'])['documents'] == ['Archived synthetic evidence']
+    assert migration.count() == 1
+
+
+def test_backup_fails_on_unreadable_authoritative_file(monkeypatch):
+    _, session = create_session_dir('Unreadable backup source')
+    source = session_paths(session)['source_audio']
+    source.write_bytes(b'preserve me')
+    original_stat = Path.stat
+    def broken_stat(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError('synthetic read error')
+        return original_stat(path, *args, **kwargs)
+    before = set(Path(settings.backup_root).glob('*'))
+    monkeypatch.setattr(Path, 'stat', broken_stat)
+    with pytest.raises(PermissionError):
+        create_structured_backup()
+    added = set(Path(settings.backup_root).glob('*')) - before
+    assert all(item.name.endswith('.incomplete') for item in added)
+    assert source.read_bytes() == b'preserve me'
 
 
 def test_session_summary_exposes_metadata_derived_fields():

@@ -1,5 +1,38 @@
 # Phase 1–5 release review
 
+## Blocker remediation — 2026-10-26
+
+The issues below have been patched on `codex/phase-1-5`; production remains
+unchanged and this is not deployment approval.
+
+- Grounding compares normalized numeric tokens and word-bounded entities,
+  including names at sentence starts. Questions are no longer treated as
+  evidence. Audits report `grounding_check_passed`, not semantic support.
+- Personal/hybrid answers are buffered until the final deterministic check.
+  This adds no model call, but delays visible text until generation completes.
+- Voice revocation clears the model's conditioning cache, releases the model,
+  and fails closed if cleanup fails. Lock release is guaranteed; cached playback
+  and warmup also participate in the lifecycle lock.
+- Backups fail on unreadable source files, verify copied checksums, export all
+  Chroma collections and their metadata/counts, and validate isolated restores.
+  Restore remains empty-target-only and supports legacy single-collection backups.
+- iPhone preparation now hides Cancel when Ready. Canceled voice requests lose
+  ownership immediately, so their late completion cannot clear a newer request.
+- The native-media browser test now isolates its fake audio transport from the
+  real decoder instead of allowing invalid fixture bytes to trigger media errors.
+
+Regression checks include unsupported numbers/names, valid paraphrases, streamed
+rejection, idle/active voice revocation, cleanup failure, unreadable backup files,
+and multi-collection restore. Final check results are recorded in
+`docs/PENDING_HARDENING_REVIEW.md`.
+
+Remaining release gates: reviewed real-memory accuracy, real local voice listening,
+physical iPhone recording/playback, and ExFAT recovery acceptance. A deterministic
+heuristic does not establish semantic factual correctness. No APFS migration,
+production-data rewrite, or Chroma deletion was performed.
+
+## Original review evidence (before remediation)
+
 Candidate: `d90a1b5`, compared with deployed baseline `3cc3869`.
 Decision: keep as a draft; do not merge or deploy yet.
 

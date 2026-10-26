@@ -1,4 +1,5 @@
 import json
+import pytest
 from pathlib import Path
 
 from config import settings
@@ -222,6 +223,21 @@ def test_grounding_guard_rejects_model_identity_and_unsupported_specifics():
     assert grounded == 'I was born in the Bronx in 1955.'
     assert supported is True
     assert reasons == []
+
+
+@pytest.mark.parametrize('evidence,question,answer,passed', [
+    ('I was 10 years old.', 'Tell me about childhood.', 'I was 1 year old.', False),
+    ('I grew up in New York.', 'Tell me about childhood.', 'Boston was where I grew up.', False),
+    ('I grew up in New York.', 'Did you grow up in Boston?', 'I grew up in Boston.', False),
+    ('I grew up in Boston.', 'Tell me about childhood.', 'Boston was where I grew up.', True),
+    ('I saved 1,000 dollars.', 'Tell me about saving.', 'I saved 1000 dollars.', True),
+    ('I was born in the Bronx in 1955.', 'Where were you born?', 'In 1955, I was born in the Bronx.', True),
+])
+def test_grounding_boundaries_and_valid_paraphrases(evidence, question, answer, passed):
+    prepared = PreparedAnswer(question=question, prompt='', mode='PERSONAL', sources=[], retrieval_seconds=0, evidence_text=evidence)
+    result, check_passed, _ = ground_personal_answer(prepared, answer)
+    assert check_passed is passed
+    assert (result == answer) is passed
 
 
 def test_benchmark_answers_use_the_same_grounding_guard(monkeypatch):

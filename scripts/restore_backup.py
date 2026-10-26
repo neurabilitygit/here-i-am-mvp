@@ -30,6 +30,30 @@ def main() -> int:
         source = args.backup / record['path']
         if not source.is_file() or source.stat().st_size != record['bytes'] or digest(source) != record['sha256']:
             raise SystemExit(f"Backup verification failed: {record['path']}")
+    vector_export = args.backup / 'appdata' / 'chroma-export.jsonl'
+    descriptors = manifest.get('chroma_collections')
+    if descriptors is None:
+        descriptors = [{'name': manifest.get('chroma_collection', 'here_i_am_chunks'), 'metadata': None}]
+    by_name = {item['name']: item for item in descriptors}
+    if len(by_name) != len(descriptors):
+        raise SystemExit('Backup contains duplicate collection names')
+    counts = dict.fromkeys(by_name, 0)
+    seen_ids = set()
+    if vector_export.exists():
+        with vector_export.open(encoding='utf-8') as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                name = item.get('collection', manifest.get('chroma_collection', 'here_i_am_chunks'))
+                key = (name, item['id'])
+                if name not in by_name or key in seen_ids or not item.get('embedding'):
+                    raise SystemExit('Invalid or duplicate vector in backup')
+                seen_ids.add(key)
+                counts[name] += 1
+    for name, descriptor in by_name.items():
+        if 'count' in descriptor and descriptor['count'] != counts[name]:
+            raise SystemExit(f'Backup collection count mismatch: {name}')
     if not args.confirm_empty_target:
         print(f"Verified {len(manifest.get('files', []))} files. Re-run with --confirm-empty-target to restore.")
         return 0
@@ -37,7 +61,6 @@ def main() -> int:
         raise SystemExit('Restore target must be empty; existing data is never overwritten.')
     args.data_root.mkdir(parents=True, exist_ok=True)
 
-    vector_export = args.backup / 'appdata' / 'chroma-export.jsonl'
     for record in manifest.get('files', []):
         source = args.backup / record['path']
         if source == vector_export:
@@ -50,26 +73,34 @@ def main() -> int:
         import chromadb
 
         client = chromadb.PersistentClient(path=str(args.data_root / 'appdata' / 'chroma'))
-        collection = client.get_or_create_collection(manifest.get('chroma_collection', 'here_i_am_chunks'))
-        batch: list[dict] = []
-        for line in vector_export.read_text(encoding='utf-8').splitlines():
-            if line.strip():
-                batch.append(json.loads(line))
-            if len(batch) == 100:
-                collection.add(
-                    ids=[item['id'] for item in batch],
-                    documents=[item['document'] for item in batch],
-                    metadatas=[item['metadata'] for item in batch],
-                    embeddings=[item['embedding'] for item in batch],
-                )
-                batch.clear()
-        if batch:
-            collection.add(
+        collections = {name: client.get_or_create_collection(name, metadata=descriptor.get('metadata')) for name, descriptor in by_name.items()}
+        batches: dict[str, list[dict]] = {name: [] for name in by_name}
+
+        def flush(name):
+            batch = batches[name]
+            if not batch:
+                return
+            collections[name].add(
                 ids=[item['id'] for item in batch],
-                documents=[item['document'] for item in batch],
-                metadatas=[item['metadata'] for item in batch],
+                documents=[item['document'] for item in batch] if any(item['document'] is not None for item in batch) else None,
+                metadatas=[item['metadata'] for item in batch] if any(item['metadata'] is not None for item in batch) else None,
                 embeddings=[item['embedding'] for item in batch],
             )
+            batch.clear()
+
+        with vector_export.open(encoding='utf-8') as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                name = item.get('collection', manifest.get('chroma_collection', 'here_i_am_chunks'))
+                batches[name].append(item)
+                if len(batches[name]) == 100:
+                    flush(name)
+        for name in collections:
+            flush(name)
+            if collections[name].count() != counts[name]:
+                raise SystemExit(f'Restored collection count mismatch: {name}')
     print(f'Restored verified backup into {args.data_root}')
     return 0
 

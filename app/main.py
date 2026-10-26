@@ -800,7 +800,8 @@ def chat_stream(payload: ChatRequest):
                     if first_token is None:
                         first_token = time.perf_counter() - started
                     answer_parts.append(token)
-                    yield f'event: token\ndata: {json.dumps({"text": token})}\n\n'
+                    if prepared.mode == 'GENERAL':
+                        yield f'event: token\ndata: {json.dumps({"text": token})}\n\n'
                 elif event == 'error':
                     failed = True
                     record_generation_failure(
@@ -822,9 +823,9 @@ def chat_stream(payload: ChatRequest):
             if not failed:
                 elapsed = time.perf_counter() - started
                 raw_answer = ''.join(answer_parts)
-                grounded_answer, grounding_supported, grounding_reasons = ground_personal_answer(prepared, raw_answer)
-                if grounded_answer != raw_answer:
-                    yield f'event: replace\ndata: {json.dumps({"text": grounded_answer, "reason": "grounding"})}\n\n'
+                grounded_answer, grounding_check_passed, grounding_reasons = ground_personal_answer(prepared, raw_answer)
+                if prepared.mode != 'GENERAL':
+                    yield f'event: token\ndata: {json.dumps({"text": grounded_answer})}\n\n'
                 record_stream_audit(
                     current_provider.name,
                     getattr(current_provider, 'model', ollama_client.chat_model),
@@ -832,10 +833,10 @@ def chat_stream(payload: ChatRequest):
                     len(grounded_answer),
                     response_id=getattr(current_provider, 'last_response_id', ''),
                     usage=getattr(current_provider, 'last_usage', {}),
-                    grounding_supported=grounding_supported,
+                    grounding_check_passed=grounding_check_passed,
                     grounding_reasons=grounding_reasons,
                 )
-                yield f'event: done\ndata: {json.dumps({"elapsed_seconds": elapsed, "first_token_seconds": first_token, "characters": len(grounded_answer), "grounding_supported": grounding_supported})}\n\n'
+                yield f'event: done\ndata: {json.dumps({"elapsed_seconds": elapsed, "first_token_seconds": first_token, "characters": len(grounded_answer), "grounding_check_passed": grounding_check_passed})}\n\n'
         finally:
             canceled.set()
             if not worker_started:
