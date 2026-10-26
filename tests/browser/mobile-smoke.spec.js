@@ -47,9 +47,15 @@ test('recording mode choices stack in a single column on a phone-width viewport'
   await page.locator('[data-go="remember"]').tap();
   const solo = page.locator('label:has(#record-mode-solo)');
   const conversation = page.locator('label:has(#record-mode-conversation)');
-  const soloBox = await solo.boundingBox();
-  const conversationBox = await conversation.boundingBox();
-  expect(conversationBox.y).toBeGreaterThanOrEqual(soloBox.y + soloBox.height - 1);
+  await expect(solo).toBeVisible();
+  await expect(conversation).toBeVisible();
+  // Read both rectangles in one browser frame. Separate round trips can
+  // compare different positions during scene-in animation or smooth scrolling.
+  await expect.poll(() => page.evaluate(() => {
+    const first = document.querySelector('label:has(#record-mode-solo)').getBoundingClientRect();
+    const second = document.querySelector('label:has(#record-mode-conversation)').getBoundingClientRect();
+    return second.top - first.bottom;
+  })).toBeGreaterThanOrEqual(-1);
 });
 
 test('a ready voice uses the native iPhone media route on the first tap', async ({page}) => {
