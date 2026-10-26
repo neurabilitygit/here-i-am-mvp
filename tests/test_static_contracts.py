@@ -108,7 +108,8 @@ def test_background_voice_is_single_flight_in_the_browser():
     script = script_path.read_text(encoding='utf-8')
 
     assert 'Your voice file is already being prepared' in script
-    assert 'A voice file is already being prepared. Please wait for it to finish.' in script
+    # A 409 may mean another heavyweight task, not a duplicate voice file.
+    assert "typeof error.detail === 'string' ? error.detail : 'Voice generation failed'" in script
     assert 'Finishing an earlier voice attempt — this one will start next' not in script
     assert "label.textContent = preparing ? 'Preparing' : ready ? 'Ready—Play' : 'Play'" in script
 

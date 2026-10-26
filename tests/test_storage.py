@@ -115,3 +115,27 @@ def test_saved_audio_verification_rejects_same_size_corruption(tmp_path):
     path.write_bytes(b'changed!')
     with pytest.raises(ValueError):
         storage.verify_saved_file(path, 8, digest)
+
+
+def test_atomic_write_waits_for_read_visibility(monkeypatch, tmp_path):
+    path = tmp_path / 'state.json'
+    real_read = type(path).read_bytes
+    attempts = []
+    def delayed_read(self):
+        if self == path:
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise FileNotFoundError('synthetic visibility delay')
+        return real_read(self)
+    monkeypatch.setattr(type(path), 'read_bytes', delayed_read)
+    monkeypatch.setattr(storage.time, 'sleep', lambda _:None)
+    storage.atomic_write_text(path, 'verified')
+    assert len(attempts) == 3
+
+
+def test_atomic_write_never_reports_success_for_unverifiable_contents(monkeypatch, tmp_path):
+    path = tmp_path / 'state.json'
+    monkeypatch.setattr(type(path), 'read_bytes', lambda self:b'wrong')
+    monkeypatch.setattr(storage.time, 'sleep', lambda _:None)
+    with pytest.raises(OSError, match='could not be verified'):
+        storage.atomic_write_bytes(path, b'expected')

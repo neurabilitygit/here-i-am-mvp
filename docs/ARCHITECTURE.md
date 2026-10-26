@@ -26,7 +26,7 @@ The root `Dockerfile`, `docker-compose.yml`, and `app/` define the active runtim
 5. Unknown conversation voices pause at a mandatory name-and-role review. Exactly one voice is the memory subject. The pipeline writes labeled turns plus subject-only memory units; interviewer speech remains retrieval context and cannot become autobiographical evidence.
 6. The same batch uses the strongest configured local Gemma generation model to create validated metadata, semantic word-bounded chunks, portable JSONL, and voice-profile evidence.
 7. The purpose-built local `embeddinggemma` model creates vectors in the active Chroma collection. Both Gemma models are unloaded when the batch ends, including on failure. OpenAI has no embedding path.
-8. Chat retrieves a broad vector candidate set, reranks it by lexical overlap with the question, and expands the strongest matches with neighboring chunks from the same recording. Query vectors also use local `embeddinggemma`, which is unloaded after the query.
+8. Chat retrieves a broad vector candidate set, reranks it by lexical overlap with the question, and expands the strongest matches with neighboring chunks from the same recording. Query vectors also use local `embeddinggemma`. The local-workload candidate keeps it resident for five idle minutes; explicit indexing batches still unload it on exit.
 9. Questions route to `PERSONAL`, `GENERAL`, or `HYBRID`. Personal context is tagged as untrusted evidence, bounded by chunk and character limits, and source session IDs are returned separately.
 10. A provider layer streams generation tokens from local Ollama or an explicitly selected OpenAI model. The comparison endpoint prepares retrieval and the speaker prompt once, then runs both providers in parallel against that identical evidence so the benchmark measures answer generation rather than embedding or TTS differences.
 11. The speaker fingerprint measures transcript vocabulary/rhythm and original-audio pace without modifying source recordings.
@@ -35,7 +35,7 @@ The root `Dockerfile`, `docker-compose.yml`, and `app/` define the active runtim
 ## Reliability boundaries
 
 - Session artifacts use temporary-file, fsync, and atomic replace semantics.
-- Per-session advisory locks prevent concurrent transcript/analysis mutation.
+- Per-session advisory locks prevent concurrent transcript/analysis mutation. In the local-workload candidate these coordination files live on the container filesystem, not the external ExFAT bind mount; a diagnostic reproduced ineffective cross-process locks on that mount.
 - A single-worker durable job manager plus cross-process advisory locks prevents conflicting jobs of the same mode.
 - The local MLX voice bridge accepts only one synthesis at a time. A sentence-foundry stage creates 15–30-word speech units; groups of up to four use MLX shared-reference batch generation with per-sequence text-length limits. The bridge reuses reference conditioning, stitches the units into one WAV, persists answer/voice/speed cache entries, and returns only the completed file to Safari. Request IDs, disconnect-aware cancellation, segment progress, busy age, a 110-second no-progress watchdog, and a 120-second per-attempt ceiling prevent abandoned work from becoming an invisible stale lock. Completed segment files remain resumable after a timed-out attempt.
 - Transcript edits preserve immutable prior revisions and immediately make the prior vector version ineligible for retrieval.

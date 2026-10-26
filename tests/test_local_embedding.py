@@ -13,7 +13,7 @@ class SyntheticResponse:
         return {'embeddings': [[0.1, 0.2]]}
 
 
-def test_embedding_requests_are_local_and_unload_after_ordinary_query(monkeypatch):
+def test_embedding_requests_stay_local_and_remain_warm_briefly(monkeypatch):
     calls = []
 
     def fake_post(url, **kwargs):
@@ -21,12 +21,13 @@ def test_embedding_requests_are_local_and_unload_after_ordinary_query(monkeypatc
         return SyntheticResponse()
 
     monkeypatch.setattr('services.ollama_client.requests.post', fake_post)
+    monkeypatch.setattr('services.ollama_client.settings.ollama_embedding_keep_alive', '5m')
     client = OllamaClient('http://local-ollama:11434', 'gemma4:e4b', 'gemma4:e4b', 'embeddinggemma')
 
     assert client.embed('Where did I work?') == [0.1, 0.2]
     assert calls == [(
         'http://local-ollama:11434/api/embed',
-        {'model': 'embeddinggemma', 'input': 'Where did I work?', 'keep_alive': 0},
+        {'model': 'embeddinggemma', 'input': 'Where did I work?', 'keep_alive': '5m'},
     )]
 
 
@@ -68,3 +69,19 @@ def test_metadata_generation_uses_json_mode_and_analysis_budget(monkeypatch):
     assert request['format'] == 'json'
     assert request['options']['temperature'] == 0
     assert request['options']['num_predict'] == 3072
+    assert request['options']['num_ctx'] == 8192
+
+
+def test_batch_failed_preload_still_unloads_both_models(monkeypatch):
+    client = OllamaClient('http://local-ollama', 'chat', 'analysis', 'embed')
+    events = []
+    monkeypatch.setattr(client, 'is_reachable', lambda: True)
+    monkeypatch.setattr(client, 'preload_analysis', lambda: True)
+    monkeypatch.setattr(client, 'preload_embeddings', lambda: False)
+    monkeypatch.setattr(client, 'unload_embeddings', lambda: events.append('embed') or True)
+    monkeypatch.setattr(client, 'unload_analysis', lambda: events.append('analysis') or True)
+    with pytest.raises(RuntimeError, match='Could not load'):
+        with client.local_embedding_batch():
+            pytest.fail('must not enter failed batch')
+    assert events == ['embed', 'analysis']
+    assert client._embedding_context.batch_active is False

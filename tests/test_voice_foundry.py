@@ -10,6 +10,24 @@ from fastapi import HTTPException
 from scripts import mlx_voice_bridge as bridge
 
 
+def test_idle_unload_preserves_disk_audio_and_rejects_active_generation(monkeypatch, tmp_path):
+    cached = tmp_path / 'prepared.wav'
+    cached.write_bytes(b'preserved completed audio')
+    monkeypatch.setattr(bridge, 'CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(bridge, '_model', object())
+    monkeypatch.setattr(bridge, '_revoke_pending', False)
+    job = bridge.begin_generation('idle-test', 'key', 1)
+    try:
+        assert bridge.unload_idle_model() is False
+        assert bridge._model is not None
+    finally:
+        bridge.finish_generation(job[0])
+    assert bridge.unload_idle_model(expected_generation=bridge._activity_generation-1) is False
+    assert bridge.unload_idle_model() is True
+    assert bridge._model is None
+    assert cached.read_bytes() == b'preserved completed audio'
+
+
 @pytest.mark.parametrize('active', [False, True])
 def test_revocation_releases_model_conditioning(monkeypatch, tmp_path, active):
     model = SimpleNamespace(_icl_cache={'reference': ('codes', 'transcript')})

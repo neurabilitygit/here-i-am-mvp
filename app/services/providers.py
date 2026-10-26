@@ -202,6 +202,9 @@ def transition_provider(previous: str, current: str) -> None:
 
 
 def public_provider_error(provider: str, exc: Exception) -> str:
+    from services.local_workloads import LocalWorkloadBusy
+    if isinstance(exc, LocalWorkloadBusy):
+        return str(exc)
     if provider == 'openai':
         if isinstance(exc, requests.Timeout):
             return 'OpenAI took too long to answer. Your provider setting was not changed.'

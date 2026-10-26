@@ -112,3 +112,49 @@ reload/retry, missing-chunk rejection, unavailable draft storage, and stale
 recovery lookups. JavaScript syntax and whitespace checks passed. These tests
 use isolated data and synthetic media, not the physical phone or production
 Chroma. Deprecation warnings from upstream test dependencies remain.
+
+## Workload candidate and external-drive evidence (2026-10-26)
+
+Branch `codex/local-workload-coordination` adds heavyweight admission control,
+finite embedding/language residency, explicit context budgets, released Whisper
+instances, native voice model-only unloading, bounded stream-cancellation watcher
+lifetime, and accurate voice-busy messages. It also verifies atomic writes by
+reading them back and rejects unsafe/unverified backup paths. This is candidate
+work, not a deployment or evidence that all eight stages are complete.
+
+The existing Personal volume was confirmed as ExFAT without changing it. Tests
+used only `/Volumes/Personal/here-i-am-validation.aXczUx`, containing synthetic
+files and newly created databases. Production recordings and Chroma were not
+opened for writes. Diagnostic artifacts were retained.
+
+| Check | Native macOS on Personal | Docker bind mount of Personal |
+| --- | --- | --- |
+| Immediate read after fsync + atomic rename | 10/10 succeeded, repeated twice | 0/10 immediate; all readable after one 100-ms retry, repeated twice |
+| Second process excluded by flock | Yes | No |
+| Simple SQLite WAL, ten inserted rows | Passed | Passed |
+| Full scratch Chroma backup/restore exercise | Not run natively | Failed during fresh Chroma initialization: SQLite reported a readonly database |
+
+The first broad external exercise had six failures and ten passes, including
+unretried reads, the new Chroma initialization, and ineffective locks. After
+read-back verification and keeping coordination files inside the container, a
+focused run passed 13 checks. Session-state/revision fixtures were on Personal;
+pytest temporary corruption/lock fixtures were on container-local `/tmp`. This
+is not a passing full external Chroma restore, power-loss test, or iPhone test.
+
+Do not mark the external-storage acceptance gate complete. The evidence points
+to problems at the Docker bind-mount boundary but does not establish a single
+root cause for Chroma, nor prove native Chroma reliable. A useful next experiment
+is a native-backend/Chroma restore in an isolated copied library on the same
+ExFAT volume, preserving original locations and requiring no APFS conversion.
+Obtain direction before changing the production execution/deployment architecture.
+
+Final candidate validation: 166 backend checks passed (14 upstream deprecation
+warnings); Ruff, dependency consistency, JavaScript/shell syntax, and whitespace
+checks passed. The complete isolated WebKit run passed 37 checks, with five
+phone-only checks intentionally skipped on desktop. The browser harness now
+disables access to real inference endpoints, so synthetic browser tests cannot
+warm or cancel the user's native models. These results do not supersede the
+failed external Chroma acceptance gate. Native GPU memory release, physical
+iPhone behavior, real-corpus answer quality, and end-to-end latency have not been
+validated for this increment. Production source reconciliation still matched all
+23 scoped active files at operational commit `3cc3869`; nothing was deployed.

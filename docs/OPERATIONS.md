@@ -64,9 +64,39 @@ The Talk settings provide Local Gemma and OpenAI GPT choices, plus a side-by-sid
 
 Local cloned voice uses the Apple-native MLX Qwen3-TTS runtime. Its sentence foundry creates natural 15–30-word units, sends groups of up to four through MLX shared-reference `batch_generate`, applies the library's per-sequence text-length limits under a bounded group ceiling, and stitches the results with short pauses into one complete WAV. Safari never plays partial chunks. The reference waveform and MLX reference encodings are reused, while a persistent cache keyed by answer, voice reference, model, and speed makes repeated playback immediate. A 110-second no-progress watchdog and 120-second per-attempt ceiling bound synthesis; completed segments survive the ceiling so a retry resumes instead of starting over. Request IDs support exact cancellation, and an abandoned HTTP request cancels its native job. The optional “Prepare voice while I read” setting starts rendering when the written answer arrives. The dog-and-ball scene remains active until the full WAV is ready.
 
-Before local synthesis, the app unloads Gemma only when it is resident, leaving `embeddinggemma` untouched; the next local Talk request reloads Gemma normally. The bridge rejects overlapping synthesis with HTTP 409, while the browser waits and retries rather than presenting a false terminal failure. A controlled four-segment benchmark on this Mac produced 35.04 seconds of audio in 50.56 seconds with the BF16 model. The 4-bit model produced 38.56 seconds in 179.51 seconds, so BF16 remains the default because its wall-clock generation was about 3.55 times faster (and its elapsed time per generated audio second was about 3.23 times better).
+Before local synthesis, the app unloads configured chat/analysis models only when resident, leaving `embeddinggemma` untouched; the next local Talk request reloads its model normally. The bridge rejects overlapping synthesis with HTTP 409. The candidate browser displays the actual busy reason and preserves the written answer, rather than mislabeling every conflict as another voice file. A controlled four-segment benchmark on this Mac produced 35.04 seconds of audio in 50.56 seconds with the BF16 model. The 4-bit model produced 38.56 seconds in 179.51 seconds, so BF16 remains the default because its wall-clock generation was about 3.55 times faster (and its elapsed time per generated audio second was about 3.23 times better).
 
 ## Recovery
+
+### Local workload controls (candidate, not deployed)
+
+The candidate admits only one heavyweight app-owned local operation at a time:
+language generation, voice preparation, transcription, or memory indexing.
+Nested operations in the same worker are allowed; competing requests fail with
+a clear busy message. Embeddings remain available for retrieval, including
+OpenAI Talk while local voice is busy. No automatic provider switching occurs.
+The guard covers threads and processes sharing one container filesystem, not
+independent containers or unrelated native CLI jobs. A live native bridge busy
+check additionally protects against a voice job left running after an app restart.
+
+Defaults are five-minute embedding residency, two-minute language-model
+residency, 4096-token Talk context, and 8192-token analysis context. These are
+configurable; context is input-plus-output capacity, not an answer-length target.
+The new settings do not select a different model or change embedding formatting.
+Whisper's cached instance is released after transcription. MLX weights and
+in-memory conditioning are released after 120 idle seconds or before another
+heavy local model loads. On-disk reference files and prepared WAV/segment caches
+are preserved. The next uncached synthesis may therefore incur model loading.
+
+Deploy the matching native voice bridge before the app: it adds the authenticated
+`POST /model/unload` endpoint. An older loaded bridge is deliberately reported as
+incompatible rather than running both large models together. Existing environment
+overrides can retain older residency values; inspect them during release review.
+
+Keep `LOCKS_DIR=/tmp/here-i-am-locks` and the local-inference lock on the container
+filesystem. These are ephemeral coordination files, not memoir storage. Do not
+run multiple independent app containers against the same library. The new scratch
+Chroma failure documented in PENDING_HARDENING_REVIEW remains a release blocker.
 
 ### Recording drafts and bounded retries (candidate, not deployed)
 
@@ -87,6 +117,9 @@ reread and matched against received bytes and SHA-256. Interrupted transfers
 remain recoverable but are not ready memories. Upload retries after a lost
 server acknowledgement can still create duplicate sessions; server-side
 idempotent upload IDs remain follow-up work.
+Atomic state writes additionally verify read-back visibility/content before
+returning success. This mitigates observed delayed visibility; it does not
+repair SQLite/Chroma behavior at the Docker/ExFAT filesystem boundary.
 
 - Interrupted jobs are reported in job history and may be retried.
 - Run reconciliation before and after maintenance.

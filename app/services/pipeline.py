@@ -5,6 +5,8 @@ import hashlib
 import random
 import re
 import time
+import gc
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +21,7 @@ from config import settings
 from models.schemas import BenchmarkAnswer, ChatBenchmarkResponse, ChatResponse, ChatSource, QuizPrompt, TranscriptMetadata
 from services.jobs import job_manager
 from services.ollama_client import ollama_client
+from services.local_workloads import exclusive_local_workload, release_idle_voice
 from services.fidelity import build_speaker_fingerprint, fingerprint_prompt
 from services.preferences import load_preferences
 from services.providers import active_provider, provider_for
@@ -61,6 +64,28 @@ def whisper_model():
             compute_type="int8",
         )
     return _whisper_model
+
+
+def release_whisper_model():
+    global _whisper_model
+    _whisper_model = None
+    gc.collect()
+
+
+def prepare_transcription_memory():
+    release_idle_voice()
+    from services.voice import _release_local_chat_model
+    _release_local_chat_model()
+
+
+@contextmanager
+@exclusive_local_workload('transcription')
+def local_transcription_model():
+    try:
+        prepare_transcription_memory()
+        yield whisper_model()
+    finally:
+        release_whisper_model()
 
 
 def chroma_collection(name: str | None = None):
@@ -497,7 +522,15 @@ def memory_queue_status() -> dict:
     }
 
 
+@exclusive_local_workload('transcription')
 def transcribe_unprocessed(job_id: str, *, finalize: bool = True) -> int:
+    try:
+        return _transcribe_unprocessed(job_id, finalize=finalize)
+    finally:
+        release_whisper_model()
+
+
+def _transcribe_unprocessed(job_id: str, *, finalize: bool = True) -> int:
     sessions = [
         p for p in list_session_dirs()
         if session_paths(p)["audio"].exists()
@@ -529,6 +562,8 @@ def transcribe_unprocessed(job_id: str, *, finalize: bool = True) -> int:
         if not session_paths(session)['state'].exists()
         or load_json(session_paths(session)['state']).get('recording_mode', 'solo') == 'solo'
     ]
+    if solo_sessions:
+        prepare_transcription_memory()
     model = whisper_model() if solo_sessions else None
     processed = 0
 
@@ -591,6 +626,7 @@ def transcribe_unprocessed(job_id: str, *, finalize: bool = True) -> int:
     return processed
 
 
+@exclusive_local_workload('analysis')
 def analyze_unprocessed(job_id: str, *, finalize: bool = True) -> tuple[int, int]:
     sessions = [
         p
@@ -649,6 +685,7 @@ def analyze_unprocessed(job_id: str, *, finalize: bool = True) -> tuple[int, int
     return processed, embedded_chunks
 
 
+@exclusive_local_workload('memory-batch')
 def process_memory_batch(job_id: str) -> None:
     """Prepare queued recordings; metadata and embeddings always use local models."""
     queue = queued_memory_sessions()
@@ -922,6 +959,7 @@ def build_reindex_records(session: Path) -> list[dict]:
     return build_chunk_records(session.name, transcript, metadata, content_version=content_version)
 
 
+@exclusive_local_workload('indexing')
 def reindex_to_migration_collection(job_id: str) -> None:
     """Build the v2 index alongside the active collection without changing active data."""
     sessions = [p for p in list_session_dirs() if session_paths(p)['transcript'].exists()]

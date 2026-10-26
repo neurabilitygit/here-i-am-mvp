@@ -25,6 +25,11 @@ export SPEAKERS_DIR="$DATA_ROOT/appdata/speakers"
 export CORS_ORIGINS="http://127.0.0.1:8791"
 export TRUSTED_HOSTS="127.0.0.1,localhost,testserver"
 export PYTHONPATH="$ROOT/app"
+# Browser tests mock inference; never warm/cancel the user's real host models.
+export OLLAMA_BASE_URL=http://127.0.0.1:1
+export OLLAMA_CONTROL_URL=http://127.0.0.1:1
+export VOICE_BRIDGE_URL=http://127.0.0.1:1
+export LOCAL_BRIDGE_TOKEN=
 
 if command -v uvicorn >/dev/null 2>&1; then
   exec uvicorn main:app --app-dir "$ROOT/app" --host 127.0.0.1 --port 8791 --no-access-log
@@ -49,6 +54,8 @@ if docker image inspect here-i-am-patch-test >/dev/null 2>&1; then
     -e FIDELITY_PROFILE_PATH=/data/appdata/speaker_fingerprint.json -e FEEDBACK_PATH=/data/appdata/answer_feedback.jsonl \
     -e GENERATION_AUDIT_PATH=/data/appdata/generation_audit.jsonl -e ACTIVITY_EVENT_PATH=/data/appdata/logs/activity_events.jsonl \
     -e VOICE_DIR=/data/appdata/voice -e SPEAKERS_DIR=/data/appdata/speakers \
+    -e OLLAMA_BASE_URL=http://127.0.0.1:1 -e OLLAMA_CONTROL_URL=http://127.0.0.1:1 \
+    -e VOICE_BRIDGE_URL=http://127.0.0.1:1 -e LOCAL_BRIDGE_TOKEN= \
     -e CORS_ORIGINS=http://127.0.0.1:8791 -e TRUSTED_HOSTS=127.0.0.1,localhost,testserver \
     --entrypoint uvicorn here-i-am-patch-test main:app --app-dir /app --host 0.0.0.0 --port 8000 --no-access-log &
   wait $!

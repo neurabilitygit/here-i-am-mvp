@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Literal
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +18,7 @@ class Settings(BaseSettings):
     logs_dir: str = '/data/appdata/logs'
     tmp_dir: str = '/data/appdata/tmp'
     jobs_dir: str = '/data/appdata/jobs'
-    locks_dir: str = '/data/appdata/locks'
+    locks_dir: str = '/tmp/here-i-am-locks'
     exports_dir: str = '/data/appdata/exports'
     backup_root: str = '/data/appdata/backups'
     archive_dir: str = '/data/library/archive'
@@ -33,7 +34,11 @@ class Settings(BaseSettings):
     ollama_chat_model: str = 'gemma4:e4b'
     ollama_analysis_model: str = 'gemma4:e4b'
     ollama_embedding_model: str = 'embeddinggemma'
-    ollama_keep_alive: str = '30m'
+    ollama_keep_alive: str = '2m'
+    ollama_embedding_keep_alive: str = '5m'
+    ollama_chat_context_tokens: int = Field(default=4096, ge=1024, le=32768)
+    ollama_analysis_context_tokens: int = Field(default=8192, ge=4096, le=32768)
+    local_workload_lock_path: str = '/tmp/here-i-am-local-inference.lock'
     ollama_chat_max_tokens: int = 640
     ollama_analysis_max_tokens: int = 3072
     text_provider: Literal['local', 'openai'] = 'local'

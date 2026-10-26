@@ -9,6 +9,7 @@ from typing import Any
 import requests
 
 from config import settings
+from services.local_workloads import exclusive_local_workload, release_idle_voice
 
 
 class OllamaClient:
@@ -87,6 +88,7 @@ class OllamaClient:
         except Exception as exc:
             return {"status": "unavailable", "detail": str(exc)}
 
+    @exclusive_local_workload('language')
     def _generate(
         self,
         model: str,
@@ -94,9 +96,14 @@ class OllamaClient:
         *,
         json_mode: bool = False,
         max_tokens: int | None = None,
+        context_tokens: int | None = None,
     ) -> str:
+        release_idle_voice()
         start = time.time()
-        options = {"temperature": 0 if json_mode else settings.chat_temperature}
+        options = {
+            "temperature": 0 if json_mode else settings.chat_temperature,
+            "num_ctx": context_tokens or settings.ollama_chat_context_tokens,
+        }
         if max_tokens is not None:
             options["num_predict"] = max_tokens
         elif model == self.chat_model:
@@ -129,9 +136,15 @@ class OllamaClient:
             self.analysis_model,
             prompt,
             max_tokens=settings.ollama_analysis_max_tokens,
+            context_tokens=settings.ollama_analysis_context_tokens,
         )
 
+    @exclusive_local_workload('language')
     def stream_chat(self, prompt: str, *, cancel_event: threading.Event | None = None):
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        release_idle_voice()
+        started = time.perf_counter()
         with requests.post(
             f"{self.base_url}/api/generate",
             json={
@@ -143,35 +156,45 @@ class OllamaClient:
                 "options": {
                     "temperature": settings.chat_temperature,
                     "num_predict": settings.ollama_chat_max_tokens,
+                    "num_ctx": settings.ollama_chat_context_tokens,
                 },
             },
             stream=True,
             timeout=300,
         ) as response:
             response.raise_for_status()
+            finished = threading.Event()
             if cancel_event is not None:
-                threading.Thread(
-                    target=lambda: (cancel_event.wait(), response.close()),
-                    name='ollama-stream-cancel',
-                    daemon=True,
-                ).start()
-            for line in response.iter_lines(decode_unicode=True):
-                if cancel_event is not None and cancel_event.is_set():
-                    break
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                token = event.get('response', '')
-                if token:
-                    yield token
+                def close_on_cancel():
+                    while not finished.wait(.1):
+                        if cancel_event.is_set():
+                            response.close()
+                            return
+                threading.Thread(target=close_on_cancel, name='ollama-stream-cancel', daemon=True).start()
+            try:
+                for line in response.iter_lines(decode_unicode=True):
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get('done'):
+                        self._record_metrics('generation', event, time.perf_counter() - started)
+                    token = event.get('response', '')
+                    if token:
+                        yield token
+            finally:
+                finished.set()
 
+    @exclusive_local_workload('language')
     def preload(self) -> bool:
+        release_idle_voice()
         response = requests.post(
             f"{self.base_url}/api/generate",
-            json={"model": self.chat_model, "prompt": "", "keep_alive": settings.ollama_keep_alive},
+            json={"model": self.chat_model, "prompt": "", "stream": False, "keep_alive": settings.ollama_keep_alive, "options": {"num_ctx": settings.ollama_chat_context_tokens}},
             timeout=300,
         )
         return response.ok
@@ -182,20 +205,23 @@ class OllamaClient:
             json={
                 "model": self.embedding_model,
                 "input": "memory search warmup",
-                "keep_alive": settings.ollama_keep_alive,
+                "keep_alive": settings.ollama_embedding_keep_alive,
             },
             timeout=300,
         )
         return response.ok
 
+    @exclusive_local_workload('analysis')
     def preload_analysis(self) -> bool:
+        release_idle_voice()
         response = requests.post(
             f"{self.base_url}/api/generate",
-            json={"model": self.analysis_model, "prompt": "", "stream": False, "keep_alive": settings.ollama_keep_alive},
+            json={"model": self.analysis_model, "prompt": "", "stream": False, "keep_alive": settings.ollama_keep_alive, "options": {"num_ctx": settings.ollama_analysis_context_tokens}},
             timeout=300,
         )
         return response.ok
 
+    @exclusive_local_workload('release')
     def unload_chat(self) -> bool:
         response = requests.post(
             f"{self.base_url}/api/generate",
@@ -204,6 +230,7 @@ class OllamaClient:
         )
         return response.ok
 
+    @exclusive_local_workload('release')
     def unload_analysis(self) -> bool:
         response = requests.post(
             f"{self.base_url}/api/generate",
@@ -221,24 +248,26 @@ class OllamaClient:
         return response.ok
 
     @contextmanager
+    @exclusive_local_workload('memory-batch')
     def local_embedding_batch(self):
         """Keep local Gemma models resident only for one explicit indexing batch."""
         if not self.is_reachable():
             raise RuntimeError("Local Ollama is not running")
-        if not self.preload_analysis():
-            raise RuntimeError(f"Could not load local analysis model {self.analysis_model}")
-        if not self.preload_embeddings():
-            self.unload_analysis()
-            raise RuntimeError(f"Could not load local embedding model {self.embedding_model}")
         self._embedding_context.batch_active = True
         try:
+            if not self.preload_analysis():
+                raise RuntimeError(f"Could not load local analysis model {self.analysis_model}")
+            if not self.preload_embeddings():
+                raise RuntimeError(f"Could not load local embedding model {self.embedding_model}")
             yield
         finally:
             self._embedding_context.batch_active = False
             try:
-                self.unload_embeddings()
+                if not self.unload_embeddings():
+                    raise RuntimeError('Local embeddings could not be unloaded')
             finally:
-                self.unload_analysis()
+                if not self.unload_analysis():
+                    raise RuntimeError('Local analysis model could not be unloaded')
 
     def preload_all(self) -> bool:
         return self.preload() and self.preload_embeddings()
@@ -249,6 +278,7 @@ class OllamaClient:
             prompt,
             json_mode=True,
             max_tokens=settings.ollama_analysis_max_tokens,
+            context_tokens=settings.ollama_analysis_context_tokens,
         ).strip()
 
         if raw.startswith("```"):
@@ -273,7 +303,7 @@ class OllamaClient:
             json={
                 "model": self.embedding_model,
                 "prompt": text,
-                "keep_alive": settings.ollama_keep_alive if getattr(self._embedding_context, 'batch_active', False) else 0,
+                "keep_alive": settings.ollama_embedding_keep_alive,
             },
             timeout=300,
         )
@@ -301,7 +331,7 @@ class OllamaClient:
             json={
                 "model": self.embedding_model,
                 "input": values if not single else values[0],
-                "keep_alive": settings.ollama_keep_alive if getattr(self._embedding_context, 'batch_active', False) else 0,
+                "keep_alive": settings.ollama_embedding_keep_alive,
             },
             timeout=300,
         )

@@ -965,8 +965,10 @@ async function speakAnswer() {
   try {
     const response = await fetch('/api/voice/speak', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:answerText, speed:1, request_id:requestId}), signal:state.voiceAbort.signal});
     notifyIfAuthRequired(response);
-    if (response.status === 409) throw new Error('A voice file is already being prepared. Please wait for it to finish.');
-    if (!response.ok) throw new Error((await response.json()).detail || 'Voice generation failed');
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Voice generation failed');
+    }
     if (state.voiceRequestId !== requestId || state.chatGeneration !== answerGeneration || state.lastAnswer !== answerText) {
       activity('voice_prepare_discarded', {request_id: requestId, reason: 'answer_changed', generation: answerGeneration});
       return;

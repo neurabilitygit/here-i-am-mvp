@@ -26,11 +26,27 @@ def main() -> int:
 
     manifest_path = args.backup / 'manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    records = manifest.get('files', [])
+    if not isinstance(records, list) or not records:
+        raise SystemExit('Backup must contain a nonempty file manifest')
+    seen_paths = set()
+    backup_root = args.backup.resolve()
     for record in manifest.get('files', []):
+        value = record.get('path')
+        if not isinstance(value, str) or not value or '\\' in value:
+            raise SystemExit('Invalid backup file path')
+        relative = Path(value)
+        if relative.is_absolute() or '..' in relative.parts or value in seen_paths:
+            raise SystemExit('Unsafe or duplicate backup file path')
+        seen_paths.add(value)
         source = args.backup / record['path']
+        if not source.resolve().is_relative_to(backup_root) or source.is_symlink():
+            raise SystemExit('Backup file escapes the backup directory')
         if not source.is_file() or source.stat().st_size != record['bytes'] or digest(source) != record['sha256']:
             raise SystemExit(f"Backup verification failed: {record['path']}")
     vector_export = args.backup / 'appdata' / 'chroma-export.jsonl'
+    if vector_export.exists() and 'appdata/chroma-export.jsonl' not in seen_paths:
+        raise SystemExit('Vector export is missing from the verified file manifest')
     descriptors = manifest.get('chroma_collections')
     if descriptors is None:
         descriptors = [{'name': manifest.get('chroma_collection', 'here_i_am_chunks'), 'metadata': None}]
