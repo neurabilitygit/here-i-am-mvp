@@ -107,7 +107,11 @@ def test_conversation_upload_preserves_source_and_waits_for_speaker_processing()
     response = client.post(
         '/api/recordings/upload',
         files={'file': ('Two Voices.wav', audio.getvalue(), 'audio/wav')},
-        data={'title': 'Two Voices', 'recording_mode': 'conversation'},
+        data={
+            'title': 'Two Voices',
+            'recording_mode': 'conversation',
+            'confirm_conversation_cloud': 'true',
+        },
     )
 
     assert response.status_code == 200
@@ -118,6 +122,17 @@ def test_conversation_upload_preserves_source_and_waits_for_speaker_processing()
     detail = client.get(f"/api/sessions/{payload['session_id']}").json()
     assert detail['recording_mode'] == 'conversation'
     assert detail['speaker_review_status'] == 'pending'
+
+
+def test_conversation_upload_requires_specific_cloud_permission():
+    response = client.post(
+        '/api/recordings/upload',
+        files={'file': ('Two Voices.wav', b'not-uploaded-without-consent', 'audio/wav')},
+        data={'title': 'Two Voices', 'recording_mode': 'conversation'},
+    )
+
+    assert response.status_code == 422
+    assert 'permission' in response.json()['detail'].lower()
 
 
 def test_speaker_can_receive_an_uploaded_avatar():
@@ -155,7 +170,7 @@ def test_stream_sends_heartbeat_while_provider_is_working(monkeypatch):
     class SlowProvider:
         name = 'local'
 
-        def stream(self, _prompt):
+        def stream(self, _prompt, *, cancel_event=None):
             time.sleep(0.03)
             yield 'Ready.'
 
@@ -172,6 +187,43 @@ def test_stream_sends_heartbeat_while_provider_is_working(monkeypatch):
     assert response.status_code == 200
     assert ': keep-alive' in response.text
     assert 'Ready.' in response.text
+
+
+def test_personal_stream_never_exposes_rejected_tokens(monkeypatch):
+    from services.pipeline import PreparedAnswer
+    class Provider:
+        name = 'local'
+
+        def stream(self, _prompt, *, cancel_event=None):
+            yield 'Boston was '
+            yield 'where I grew up.'
+
+    audit = {}
+    monkeypatch.setattr(main, 'provider_status', lambda: {'active_ready': True})
+    monkeypatch.setattr(main, 'active_provider', lambda: Provider())
+    monkeypatch.setattr(main, 'prepare_answer', lambda question: PreparedAnswer(
+        question=question, prompt='test', mode='PERSONAL', sources=[], retrieval_seconds=0,
+        evidence_text='I grew up in New York.',
+    ))
+    monkeypatch.setattr(main, 'record_stream_audit', lambda *args, **kwargs: audit.update(kwargs))
+    response = client.post('/api/chat/stream', json={'question': 'Tell me about childhood.'})
+    assert response.status_code == 200
+    assert 'Boston' not in response.text
+    assert "I don't know the answer based on what I've recorded." in response.text
+    assert audit['grounding_check_passed'] is False
+    assert 'grounding_supported' not in audit
+
+
+def test_stream_rejects_overlapping_answer_generation(monkeypatch):
+    monkeypatch.setattr(main, 'provider_status', lambda: {'active': 'local', 'active_ready': True})
+    assert main._chat_stream_lock.acquire(blocking=False)
+    try:
+        response = client.post('/api/chat/stream', json={'question': 'A second question'})
+    finally:
+        main._chat_stream_lock.release()
+
+    assert response.status_code == 409
+    assert 'already being prepared' in response.json()['detail']
 
 
 def test_talk_benchmark_compares_same_prepared_question(monkeypatch):
@@ -227,6 +279,12 @@ def test_experience_and_voice_contracts():
         'session_id': 'missing', 'confirm_voice_rights': False, 'provider': 'local',
     })
     assert denied.status_code == 400
+
+    empty_session = client.post('/api/voice/prepare', json={
+        'session_id': '', 'confirm_voice_rights': True, 'provider': 'local',
+    })
+    assert empty_session.status_code == 400
+    assert empty_session.json()['detail'] == 'Choose a recording before creating your AI voice'
 
 
 def test_invalid_provider_switch_is_not_persisted(monkeypatch):

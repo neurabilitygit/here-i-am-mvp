@@ -48,6 +48,79 @@ test('showLoginDialog closes any other open dialog instead of stacking on top of
   await expect(page.locator('#quiz-dialog')).toBeHidden();
 });
 
+test('successful login opens a fresh landing page after Safari commits the session cookie', async ({page}) => {
+  await page.route('**/api/auth/login', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({authenticated: true, required: true}),
+  }));
+  await page.evaluate(() => window.showLoginDialog());
+  await page.locator('#login-passphrase').fill('synthetic passphrase');
+
+  await Promise.all([
+    page.waitForNavigation(),
+    page.locator('#login-form button[type="submit"]').click(),
+  ]);
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.locator('#talk-scene')).toBeVisible();
+  await expect(page.locator('#login-dialog')).toBeHidden();
+});
+
+test('suggested questions stay disabled until the current answer finishes', async ({page}) => {
+  let finishAnswer;
+  const answerCanFinish = new Promise((resolve) => { finishAnswer = resolve; });
+  await page.route('**/api/chat/stream', async (route) => {
+    await answerCanFinish;
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: [
+        'event: meta\ndata: {"mode":"PERSONAL","provider":"local","sources":[]}\n\n',
+        'event: token\ndata: {"text":"A grounded answer."}\n\n',
+        'event: done\ndata: {"elapsed_seconds":0.1}\n\n',
+      ].join(''),
+    });
+  });
+
+  await page.locator('#suggestions button').first().click();
+  await expect(page.locator('#suggestions button').first()).toBeDisabled();
+  await expect(page.locator('#suggestions button').nth(1)).toBeDisabled();
+  await expect(page.locator('#chat-send')).toBeDisabled();
+
+  finishAnswer();
+  await expect(page.locator('#answer-text')).toHaveText('A grounded answer.');
+  await expect(page.locator('#suggestions button').first()).toBeEnabled();
+  await expect(page.locator('#chat-send')).toBeEnabled();
+});
+
+test('voice creation waits for a valid recording choice', async ({page}) => {
+  let releaseCandidates;
+  const candidatesCanLoad = new Promise((resolve) => { releaseCandidates = resolve; });
+  await page.route('**/api/voice/candidates', async (route) => {
+    await candidatesCanLoad;
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        session_id: '2026-04-14_03-10-17_recording',
+        duration_seconds: 373.4,
+        transcript_words: 800,
+        words_per_minute: 128.5,
+        score: 91.2,
+      }]),
+    });
+  });
+
+  await page.locator('#settings-button').click();
+  await page.locator('#voice-setup-button').click();
+  await expect(page.locator('#voice-dialog')).toBeVisible();
+  await expect(page.locator('#voice-create')).toBeDisabled();
+  await expect(page.locator('#voice-candidate')).toBeDisabled();
+
+  releaseCandidates();
+  await expect(page.locator('#voice-candidate')).toHaveValue('2026-04-14_03-10-17_recording');
+  await expect(page.locator('#voice-create')).toBeEnabled();
+});
+
 test('renderRelatedMemories ignores a response for a memory that is no longer open', async ({page}) => {
   await page.evaluate(() => { window.HereIAmCore.state.activeSessionId = 'memory-b'; });
   await page.locator('#related-memories').evaluate((el) => { el.hidden = true; });

@@ -47,9 +47,15 @@ test('recording mode choices stack in a single column on a phone-width viewport'
   await page.locator('[data-go="remember"]').tap();
   const solo = page.locator('label:has(#record-mode-solo)');
   const conversation = page.locator('label:has(#record-mode-conversation)');
-  const soloBox = await solo.boundingBox();
-  const conversationBox = await conversation.boundingBox();
-  expect(conversationBox.y).toBeGreaterThanOrEqual(soloBox.y + soloBox.height - 1);
+  await expect(solo).toBeVisible();
+  await expect(conversation).toBeVisible();
+  // Read both rectangles in one browser frame. Separate round trips can
+  // compare different positions during scene-in animation or smooth scrolling.
+  await expect.poll(() => page.evaluate(() => {
+    const first = document.querySelector('label:has(#record-mode-solo)').getBoundingClientRect();
+    const second = document.querySelector('label:has(#record-mode-conversation)').getBoundingClientRect();
+    return second.top - first.bottom;
+  })).toBeGreaterThanOrEqual(-1);
 });
 
 test('a ready voice uses the native iPhone media route on the first tap', async ({page}) => {
@@ -62,6 +68,9 @@ test('a ready voice uses the native iPhone media route on the first tap', async 
     };
     HTMLMediaElement.prototype.pause = () => {};
     HTMLMediaElement.prototype.load = () => {};
+    // Mock the media transport as well as play(): synthetic fixture bytes are
+    // not decodable audio and must not trigger a real asynchronous media error.
+    Object.defineProperty(HTMLMediaElement.prototype, 'src', {configurable: true, set() {}, get() { return ''; }});
     const state = window.HereIAmCore.state;
     state.lastAnswer = 'A prepared answer for native iPhone playback.';
     state.chatGeneration = 1;
@@ -82,4 +91,20 @@ test('a ready voice uses the native iPhone media route on the first tap', async 
   expect(await page.evaluate(() => window.HereIAmCore.state.voicePlaybackMethod)).toBe('html_audio');
   expect(await page.evaluate(() => window.HereIAmCore.state.audioContext)).toBeNull();
   await expect(page.locator('#stop-speaking')).toContainText('Playing');
+});
+
+test('completed preparation hides Cancel and offers Ready—Play', async ({page}) => {
+  await page.evaluate(() => {
+    const state = window.HereIAmCore.state;
+    state.lastAnswer = 'A prepared answer.';
+    state.voicePrerenderText = state.lastAnswer;
+    state.voicePrerenderBlob = new Blob(['ready'], {type: 'audio/wav'});
+    state.voicePreparing = false;
+    state.voicePlaying = false;
+    document.getElementById('answer-card').hidden = false;
+    document.getElementById('stop-speaking').hidden = false;
+    window.updateSpeakButton();
+  });
+  await expect(page.locator('#stop-speaking')).toBeHidden();
+  await expect(page.locator('#speak-answer')).toContainText('Ready—Play');
 });

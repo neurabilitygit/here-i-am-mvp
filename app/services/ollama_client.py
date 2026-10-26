@@ -113,7 +113,7 @@ class OllamaClient:
             max_tokens=settings.ollama_analysis_max_tokens,
         )
 
-    def stream_chat(self, prompt: str):
+    def stream_chat(self, prompt: str, *, cancel_event: threading.Event | None = None):
         with requests.post(
             f"{self.base_url}/api/generate",
             json={
@@ -131,7 +131,15 @@ class OllamaClient:
             timeout=300,
         ) as response:
             response.raise_for_status()
+            if cancel_event is not None:
+                threading.Thread(
+                    target=lambda: (cancel_event.wait(), response.close()),
+                    name='ollama-stream-cancel',
+                    daemon=True,
+                ).start()
             for line in response.iter_lines(decode_unicode=True):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
                 if not line:
                     continue
                 try:

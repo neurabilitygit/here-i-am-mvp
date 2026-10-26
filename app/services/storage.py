@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -15,6 +16,27 @@ import fcntl
 from slugify import slugify
 
 from config import settings
+
+
+class LibraryBusyError(RuntimeError):
+    pass
+
+
+@contextmanager
+def library_write_lock(*, blocking: bool = True):
+    """Serialize library mutations and point-in-time snapshots."""
+    Path(settings.locks_dir).mkdir(parents=True, exist_ok=True)
+    lock_path = Path(settings.locks_dir) / 'library-write.lock'
+    with lock_path.open('a+', encoding='utf-8') as handle:
+        operation = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        try:
+            fcntl.flock(handle.fileno(), operation)
+        except BlockingIOError as exc:
+            raise LibraryBusyError('The memory library is busy with another protected operation') from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def ensure_directories() -> None:
@@ -76,6 +98,34 @@ def atomic_write_text(path: Path, text: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
+        # Persist the directory entry as well as the file contents. This is
+        # important for the external-volume deployment: after a power loss an
+        # fsynced temporary file is not sufficient unless the rename itself is
+        # durably recorded by the parent directory.
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -86,7 +136,20 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def update_processing_state(session_path: Path, **updates: Any) -> None:
     state_path = session_path / 'processing_state.json'
-    state = load_json(state_path) if state_path.exists() else {}
+    # External volumes can briefly report the freshly replaced state file as
+    # missing even after the durable create has completed. Avoid the
+    # exists-then-open race and give the volume a bounded chance to make the
+    # directory entry visible before falling back to the existing
+    # missing-state behavior.
+    state = {}
+    for delay in (0, 0.02, 0.05, 0.1, 0.25, 0.5):
+        if delay:
+            time.sleep(delay)
+        try:
+            state = load_json(state_path)
+            break
+        except FileNotFoundError:
+            continue
     state.update(updates)
     state['state_version'] = max(int(state.get('state_version', 2)), 4)
     state['updated_at'] = datetime.now(timezone.utc).isoformat()
@@ -178,5 +241,11 @@ def archive_session(session_id: str) -> Path:
     if target.exists():
         raise FileExistsError('Session is already archived')
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(target))
+    with session_lock(session_id):
+        shutil.move(str(source), str(target))
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     return target

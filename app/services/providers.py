@@ -58,8 +58,8 @@ Do not pad the answer, repeat the same fact, or invent connective details. If th
         _append_audit({'provider': result.provider, 'model': result.model, 'elapsed_seconds': result.elapsed_seconds, 'characters': len(text), 'streamed': False, 'outcome': 'success'})
         return result
 
-    def stream(self, prompt: str) -> Iterator[str]:
-        yield from ollama_client.stream_chat(self._prompt(prompt))
+    def stream(self, prompt: str, *, cancel_event: threading.Event | None = None) -> Iterator[str]:
+        yield from ollama_client.stream_chat(self._prompt(prompt), cancel_event=cancel_event)
 
 
 class OpenAIProvider:
@@ -121,7 +121,7 @@ class OpenAIProvider:
         })
         return result
 
-    def stream(self, prompt: str) -> Iterator[str]:
+    def stream(self, prompt: str, *, cancel_event: threading.Event | None = None) -> Iterator[str]:
         with requests.post(
             f'{settings.openai_base_url.rstrip("/")}/responses',
             headers=self._headers(),
@@ -130,7 +130,15 @@ class OpenAIProvider:
             timeout=(settings.provider_connect_timeout_seconds, settings.provider_read_timeout_seconds),
         ) as response:
             response.raise_for_status()
+            if cancel_event is not None:
+                threading.Thread(
+                    target=lambda: (cancel_event.wait(), response.close()),
+                    name='openai-stream-cancel',
+                    daemon=True,
+                ).start()
             for line in response.iter_lines(decode_unicode=True):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
                 if not line or not line.startswith('data: '):
                     continue
                 value = line[6:]
@@ -213,6 +221,8 @@ def record_stream_audit(
     *,
     response_id: str = '',
     usage: dict | None = None,
+    grounding_check_passed: bool | None = None,
+    grounding_reasons: list[str] | None = None,
 ) -> None:
     usage = usage or {}
     _append_audit({
@@ -225,6 +235,9 @@ def record_stream_audit(
         'response_id': response_id,
         'input_tokens': usage.get('input_tokens'),
         'output_tokens': usage.get('output_tokens'),
+        'grounding_check_passed': grounding_check_passed,
+        'grounding_check_kind': 'deterministic_heuristic_v2',
+        'grounding_reasons': (grounding_reasons or [])[:10],
     })
 
 

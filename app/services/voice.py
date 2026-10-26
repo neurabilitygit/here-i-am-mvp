@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ STATUS_PATH = Path(settings.voice_dir) / 'voice_status.json'
 REFERENCE_PATH = Path(settings.voice_dir) / 'voice_reference.wav'
 REFERENCE_TEXT_PATH = Path(settings.voice_dir) / 'voice_reference.txt'
 LOCAL_BRIDGE_HEADERS = {'X-Here-I-Am-Local': settings.local_bridge_token}
+logger = logging.getLogger(__name__)
 
 
 def _duration(path: Path) -> float:
@@ -110,6 +112,9 @@ def load_voice_status() -> VoiceStatus:
             status.bridge_busy = bool(bridge.get('busy'))
             status.bridge_busy_seconds = round(float(bridge.get('busy_seconds') or 0), 1)
             status.bridge_request_id = str(bridge.get('active_request_id') or '')
+            if status.bridge_deletion_pending and not bridge.get('revocation_pending') and not status.bridge_busy:
+                status.bridge_deletion_pending = False
+                _save_status(status)
     except Exception:
         status.bridge_ready = False
     return status
@@ -191,6 +196,19 @@ def revoke_voice(delete_reference: bool = True) -> VoiceStatus:
     voice_id = raw_status.get('voice_id') or settings.elevenlabs_voice_id
     cloud_deletion_pending = False
     cloud_deletion_error = ''
+    bridge_deletion_pending = False
+    try:
+        bridge_response = requests.post(
+            f'{settings.voice_bridge_url.rstrip("/")}/identity/revoke',
+            headers=LOCAL_BRIDGE_HEADERS,
+            timeout=20,
+        )
+        bridge_response.raise_for_status()
+        bridge_deletion_pending = bridge_response.json().get('status') == 'canceling'
+    except (requests.RequestException, ValueError):
+        # Disabling synthesis locally must not depend on bridge availability.
+        # The status records that cache cleanup still needs confirmation.
+        bridge_deletion_pending = True
     if status.provider == 'elevenlabs' and voice_id and settings.elevenlabs_api_key:
         try:
             response = requests.delete(
@@ -214,6 +232,7 @@ def revoke_voice(delete_reference: bool = True) -> VoiceStatus:
         'voice_id': voice_id,
         'cloud_deletion_pending': cloud_deletion_pending,
         'cloud_deletion_error': cloud_deletion_error,
+        'bridge_deletion_pending': bridge_deletion_pending,
     })
     return load_voice_status()
 
@@ -298,6 +317,16 @@ def synthesize(text: str, speed: float = 1.0, request_id: str = '') -> tuple[byt
             detail = 'The local voice is already preparing another answer'
         raise RuntimeError(detail)
     response.raise_for_status()
+    logger.info(
+        'local voice completed request_id=%s cache=%s segments=%s resumed=%s elapsed_seconds=%s audio_seconds=%s real_time_factor=%s',
+        request_id,
+        response.headers.get('X-Voice-Cache', ''),
+        response.headers.get('X-Voice-Segments', ''),
+        response.headers.get('X-Voice-Segments-Resumed', ''),
+        response.headers.get('X-Voice-Elapsed-Seconds', ''),
+        response.headers.get('X-Voice-Audio-Seconds', ''),
+        response.headers.get('X-Voice-Real-Time-Factor', ''),
+    )
     return response.content, response.headers.get('content-type', 'audio/wav'), provider
 
 

@@ -10,6 +10,46 @@ from fastapi import HTTPException
 from scripts import mlx_voice_bridge as bridge
 
 
+@pytest.mark.parametrize('active', [False, True])
+def test_revocation_releases_model_conditioning(monkeypatch, tmp_path, active):
+    model = SimpleNamespace(_icl_cache={'reference': ('codes', 'transcript')})
+    monkeypatch.setattr(bridge, '_model', model)
+    monkeypatch.setattr(bridge, '_revoke_pending', False)
+    monkeypatch.setattr(bridge, 'CACHE_DIR', str(tmp_path / 'cache'))
+    generation = bridge.begin_generation('revoke-test', 'key', 1) if active else None
+    result = bridge.revoke_identity()
+    if active:
+        assert result['status'] == 'canceling'
+        assert generation[1].is_set()
+        bridge.finish_generation(generation[0])
+    else:
+        assert result['status'] == 'revoked'
+    assert model._icl_cache == {}
+    assert bridge._model is None
+    assert not bridge._revoke_pending
+    assert not bridge._generation_lock.locked()
+
+
+def test_revocation_cleanup_failure_releases_lock_and_blocks_generation(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge, '_revoke_pending', False)
+    monkeypatch.setattr(bridge, '_model', SimpleNamespace(_icl_cache={}))
+    monkeypatch.setattr(bridge, 'CACHE_DIR', str(tmp_path))
+    generation = bridge.begin_generation('failed-revoke', 'key', 1)
+    bridge.revoke_identity()
+    def fail(*args, **kwargs):
+        raise PermissionError('synthetic cleanup failure')
+    monkeypatch.setattr(bridge.shutil, 'rmtree', fail)
+    with pytest.raises(PermissionError):
+        bridge.finish_generation(generation[0])
+    assert not bridge._generation_lock.locked()
+    assert bridge._revoke_pending
+    with pytest.raises(HTTPException):
+        bridge.begin_generation('next', 'key', 1)
+    with pytest.raises(HTTPException):
+        bridge.warm()
+    assert not bridge._generation_lock.locked()
+
+
 def test_sentence_foundry_preserves_words_and_bounds_segments():
     text = (
         'This first sentence contains enough natural words to establish a calm and recognizable speaking rhythm for the listener. '
@@ -60,6 +100,21 @@ def test_stitching_adds_faded_pause_and_applies_speed():
     assert np.allclose(normal[2400:4200], 0)
 
 
+def test_pitch_preserving_speed_change_keeps_dominant_tone():
+    sample_rate = 24000
+    seconds = 1.0
+    time = np.arange(int(sample_rate * seconds), dtype=np.float32) / sample_rate
+    source = np.sin(2 * np.pi * 220 * time).astype(np.float32)
+
+    faster = bridge.time_stretch_wsola(source, sample_rate, 1.2)
+    spectrum = np.abs(np.fft.rfft(faster))
+    frequencies = np.fft.rfftfreq(faster.size, 1 / sample_rate)
+    dominant = float(frequencies[int(np.argmax(spectrum))])
+
+    assert faster.size == int(source.size / 1.2)
+    assert dominant == pytest.approx(220, abs=8)
+
+
 def test_synthesis_batches_and_reuses_cached_wav(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, 'ALLOWED_REFERENCE_ROOT', tmp_path.resolve())
     reference = tmp_path / 'reference.wav'
@@ -96,6 +151,11 @@ def test_synthesis_batches_and_reuses_cached_wav(monkeypatch, tmp_path):
     assert first.headers['x-voice-segments'] == str(len(bridge.sentence_segments(request.text)))
     assert len(calls) >= 1
     assert all(len(texts) <= bridge.SENTENCE_BATCH_SIZE for texts, _ceiling in calls)
+    monkeypatch.setattr(bridge, '_revoke_pending', True)
+    with pytest.raises(HTTPException) as failure:
+        bridge.synthesize(request)
+    assert failure.value.status_code == 409
+    assert not bridge._generation_lock.locked()
 
 
 def test_timed_out_synthesis_resumes_cached_segments_and_stitches_one_wav(monkeypatch, tmp_path):

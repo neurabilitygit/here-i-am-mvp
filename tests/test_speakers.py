@@ -2,7 +2,7 @@ import json
 
 from models.schemas import SpeakerCreate
 from services import speakers
-from services.speakers import _auto_assign_known_speakers, _normalize_segments, apply_speaker_assignments, create_speaker, speaker_review
+from services.speakers import _auto_assign_known_speakers, _known_speaker_references, _normalize_segments, apply_speaker_assignments, create_speaker, get_speaker_record, revise_conversation_transcript, revoke_speaker_voice_reference, speaker_review, update_speaker_record
 from services.storage import create_session_dir, load_json, save_json, session_paths, update_processing_state
 
 
@@ -94,3 +94,74 @@ def test_known_speaker_labels_still_require_identity_confidence(monkeypatch):
     confident = [{**turn, 'speaker_confidence': 0.97} for turn in turns]
     assert _auto_assign_known_speakers(session, confident) is True
     assert applied == [True]
+
+
+def test_speaker_assignment_retry_does_not_create_a_second_identity():
+    _session_id, session = create_session_dir('Retry-safe voices')
+    paths = session_paths(session)
+    save_json(paths['transcript_turns'], {'schema_version': 1, 'turns': [
+        {'cluster_id': 'questioner', 'start': 0.0, 'end': 1.0, 'text': 'Where was home?'},
+        {'cluster_id': 'subject', 'start': 1.0, 'end': 3.0, 'text': 'Home was Albany.'},
+    ]})
+    payload = [
+        {'cluster_id': 'questioner', 'display_name': 'Retry Interviewer', 'role': 'interviewer'},
+        {'cluster_id': 'subject', 'display_name': 'Retry Subject', 'role': 'memory_subject'},
+    ]
+
+    first = apply_speaker_assignments(session, payload)
+    second = apply_speaker_assignments(session, payload)
+
+    assert [item['speaker_id'] for item in second['assignments']] == [item['speaker_id'] for item in first['assignments']]
+
+
+def test_reviewed_conversation_words_can_be_revised_with_prior_version_preserved():
+    interviewer = create_speaker(SpeakerCreate(display_name='Revision Interviewer', default_role='interviewer'))
+    subject = create_speaker(SpeakerCreate(display_name='Revision Subject', default_role='memory_subject'))
+    _session_id, session = create_session_dir('Editable conversation')
+    paths = session_paths(session)
+    save_json(paths['transcript_turns'], {'schema_version': 1, 'turns': [
+        {'cluster_id': 'a', 'start': 0.0, 'end': 1.0, 'text': 'Where was home?'},
+        {'cluster_id': 'b', 'start': 1.0, 'end': 3.0, 'text': 'Home was Albeny.'},
+    ]})
+    assignments = [
+        {'cluster_id': 'a', 'speaker_id': interviewer.speaker_id, 'role': 'interviewer'},
+        {'cluster_id': 'b', 'speaker_id': subject.speaker_id, 'role': 'memory_subject'},
+    ]
+    apply_speaker_assignments(session, assignments)
+    original = paths['transcript'].read_text(encoding='utf-8')
+
+    result = revise_conversation_transcript(
+        session,
+        '**Revision Interviewer:** Where was home?\n\n**Revision Subject:** Home was Albany.',
+        'corrected place name',
+    )
+
+    assert result['memory_unit_count'] == 1
+    assert 'Home was Albany.' in paths['transcript'].read_text(encoding='utf-8')
+    revision = session / 'conversation.revisions' / result['revision_id'] / 'transcript.md'
+    assert revision.read_text(encoding='utf-8') == original
+    units = [json.loads(line) for line in paths['memory_units'].read_text(encoding='utf-8').splitlines()]
+    assert units[0]['subject_evidence'] == 'Home was Albany.'
+
+
+def test_voice_reference_requires_consent_and_revocation_removes_it(tmp_path):
+    speaker = create_speaker(SpeakerCreate(display_name='Consent Test Speaker'))
+    reference = tmp_path / 'voice-reference.wav'
+    reference.write_bytes(b'RIFF-consented-reference')
+    update_speaker_record(speaker.speaker_id, voice_reference_path=str(reference))
+
+    assert _known_speaker_references() == []
+
+    update_speaker_record(speaker.speaker_id, voice_reference_consent={
+        'consented': True,
+        'consented_at': '2026-01-01T00:00:00+00:00',
+        'revoked_at': None,
+        'disclosure_version': '1.0',
+    })
+    references = _known_speaker_references()
+    assert any(name == speaker.speaker_id for name, _value in references)
+
+    profile = revoke_speaker_voice_reference(speaker.speaker_id)
+    assert profile.voice_matching_consented is False
+    assert not reference.exists()
+    assert get_speaker_record(speaker.speaker_id)['voice_reference_path'] is None

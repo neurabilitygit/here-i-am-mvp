@@ -3,7 +3,6 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
-import re
 import threading
 import traceback
 import uuid
@@ -70,28 +69,32 @@ class JobManager:
 
     def create(self, mode: str, message: str) -> JobProgress:
         with self._lock:
-            if mode in self._active_modes:
-                raise JobConflictError(f'A {mode} job is already active')
-            lock_name = re.sub(r'[^A-Za-z0-9_-]+', '-', mode).strip('-') or 'job'
-            lock_path = Path(settings.locks_dir) / f'{lock_name}.job.lock'
+            if self._active_modes:
+                active = ', '.join(sorted(self._active_modes))
+                raise JobConflictError(f'Another protected background job is already active: {active}')
+            # One cross-process lock protects the single background worker even
+            # when two application processes request different job modes.
+            lock_path = Path(settings.locks_dir) / 'background-job.lock'
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             handle = lock_path.open('a+', encoding='utf-8')
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 handle.close()
-                raise JobConflictError(f'A {mode} job is already active in another application process') from exc
-        job = JobProgress(
-            id=str(uuid.uuid4()),
-            mode=mode,
-            status='queued',
-            message=message,
-            processed=0,
-            total=0,
-            completed=False,
-            result={},
-        )
-        with self._lock:
+                raise JobConflictError('Another protected background job is active in another application process') from exc
+            # Register the job before releasing the process-local mutex. Without
+            # this, two different modes can both observe an empty active set and
+            # enter the single-worker queue behind one another.
+            job = JobProgress(
+                id=str(uuid.uuid4()),
+                mode=mode,
+                status='queued',
+                message=message,
+                processed=0,
+                total=0,
+                completed=False,
+                result={},
+            )
             self._jobs[job.id] = job
             self._active_modes.add(mode)
             self._mode_lock_handles[mode] = handle

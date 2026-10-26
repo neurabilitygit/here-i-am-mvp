@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import shutil
 import tempfile
 import zipfile
@@ -11,7 +13,7 @@ from typing import Callable
 
 from config import settings
 from models.schemas import ReconciliationIssue, ReconciliationReport, SessionDetail, SessionSummary
-from services.storage import atomic_write_text, load_json, safe_session_dir, session_paths
+from services.storage import atomic_write_text, library_write_lock, load_json, safe_session_dir, session_paths
 
 
 def _modified_at(paths: list[Path]):
@@ -29,9 +31,14 @@ def _is_still_sealed(state: dict) -> bool:
     if not unlock_at:
         return False
     try:
-        return datetime.fromisoformat(unlock_at) > datetime.now(timezone.utc)
+        parsed = datetime.fromisoformat(unlock_at)
+        if parsed.tzinfo is None:
+            return True
+        return parsed > datetime.now(timezone.utc)
     except (TypeError, ValueError):
-        return False
+        # A malformed seal is a confidentiality problem, not an implicit
+        # unlock. Keep it sealed and surface a reconciliation issue instead.
+        return True
 
 
 def session_summary(session_path: Path) -> SessionSummary:
@@ -65,6 +72,8 @@ def session_summary(session_path: Path) -> SessionSummary:
         notable_events=[] if sealed else (metadata.get('notable_events') or []),
         sealed=sealed,
         unlock_at=safe_unlock_at,
+        upload_status=str(state.get('upload_status') or ('ready' if paths['audio'].exists() else 'waiting')),
+        upload_error=str(state.get('upload_error') or ''),
     )
 
 
@@ -77,6 +86,38 @@ def _all_session_summaries() -> list[SessionSummary]:
 
 def list_sessions() -> list[SessionSummary]:
     return [summary for summary in _all_session_summaries() if not summary.sealed]
+
+
+def search_sessions(query: str, limit: int = 100) -> list[SessionSummary]:
+    """Search unsealed authoritative text and metadata without using an LLM."""
+    terms = [value.lower() for value in query.split() if len(value.strip()) >= 2][:12]
+    if not terms:
+        return list_sessions()[:limit]
+    ranked: list[tuple[int, datetime | None, SessionSummary]] = []
+    for summary in list_sessions():
+        session = safe_session_dir(summary.session_id)
+        paths = session_paths(session)
+        try:
+            metadata = load_json(paths['metadata']) if paths['metadata'].exists() else {}
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+        try:
+            transcript = paths['transcript'].read_text(encoding='utf-8') if paths['transcript'].exists() else ''
+        except OSError:
+            transcript = ''
+        title_text = summary.title.lower()
+        metadata_text = json.dumps(metadata, ensure_ascii=False).lower()
+        transcript_text = transcript.lower()
+        score = sum(
+            (6 if term in title_text else 0)
+            + (3 if term in metadata_text else 0)
+            + (1 if term in transcript_text else 0)
+            for term in terms
+        )
+        if score:
+            ranked.append((score, summary.updated_at, summary))
+    ranked.sort(key=lambda item: (item[0], item[1] or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+    return [item[2] for item in ranked[:limit]]
 
 
 def sealed_sessions() -> list[SessionSummary]:
@@ -136,11 +177,20 @@ def get_session(session_id: str, include_transcript: bool = True) -> SessionDeta
 
 def reconciliation_report() -> ReconciliationReport:
     issues: list[ReconciliationIssue] = []
-    sessions = list_sessions()
+    # Reconciliation must inspect sealed sessions too. Public listing remains
+    # redacted, but a malformed seal must be reported rather than disappearing
+    # from both the library and the maintenance report.
+    sessions = _all_session_summaries()
     for summary in sessions:
         path = safe_session_dir(summary.session_id)
         state_path = session_paths(path)['state']
         state = load_json(state_path) if state_path.exists() else {}
+        if state.get('upload_status') == 'validation_failed':
+            issues.append(ReconciliationIssue(
+                session_id=summary.session_id,
+                code='recording_validation_failed',
+                detail='The original recording is retained but needs another validation attempt',
+            ))
         if not state_path.exists():
             issues.append(ReconciliationIssue(session_id=summary.session_id, code='missing_state', detail='processing_state.json is missing'))
         comparisons = {
@@ -197,6 +247,19 @@ def reconciliation_report() -> ReconciliationReport:
                     detail='An activated metadata or chunk artifact is unreadable',
                 ))
 
+        raw_unlock_at = state.get('unlock_at')
+        if raw_unlock_at:
+            try:
+                parsed_unlock_at = datetime.fromisoformat(raw_unlock_at)
+                if parsed_unlock_at.tzinfo is None:
+                    raise ValueError('timezone required')
+            except (TypeError, ValueError):
+                issues.append(ReconciliationIssue(
+                    session_id=summary.session_id,
+                    code='invalid_seal_metadata',
+                    detail='unlock_at is invalid; this memory remains sealed until an authorized repair',
+                ))
+
     # Chroma is append-only. Reconciliation verifies that every activated
     # version is represented without treating preserved historical vectors as
     # orphans or deleting anything.
@@ -231,8 +294,50 @@ def reconciliation_report() -> ReconciliationReport:
             code='vector_reconciliation_unavailable',
             detail=f'Chroma could not be inspected: {type(exc).__name__}',
         ))
+    archived_directories = [
+        path for path in Path(settings.archive_dir).iterdir() if path.is_dir()
+    ] if Path(settings.archive_dir).exists() else []
+    for archived in archived_directories:
+        paths = session_paths(archived)
+        if not paths['state'].exists():
+            issues.append(ReconciliationIssue(
+                session_id=archived.name,
+                code='archived_missing_state',
+                detail='Archived memory is missing processing_state.json',
+            ))
+        if not paths['source_audio'].exists() and not paths['audio'].exists():
+            issues.append(ReconciliationIssue(
+                session_id=archived.name,
+                code='archived_missing_audio',
+                detail='Archived memory has neither its source recording nor normalized audio',
+            ))
+    try:
+        from services.speakers import get_speaker_record, list_speakers
+
+        for profile in list_speakers():
+            record = get_speaker_record(profile.speaker_id)
+            consented = bool((record.get('voice_reference_consent') or {}).get('consented'))
+            reference = Path(record['voice_reference_path']) if record.get('voice_reference_path') else None
+            if consented and (reference is None or not reference.exists()):
+                issues.append(ReconciliationIssue(
+                    session_id=f'speaker:{profile.speaker_id}',
+                    code='consented_voice_reference_missing',
+                    detail='Speaker consent is active but the derived voice reference is missing',
+                ))
+            if not consented and reference is not None and reference.exists():
+                issues.append(ReconciliationIssue(
+                    session_id=f'speaker:{profile.speaker_id}',
+                    code='unconsented_voice_reference_present',
+                    detail='A derived speaker reference exists without active matching consent',
+                ))
+    except Exception as exc:
+        issues.append(ReconciliationIssue(
+            session_id='system',
+            code='speaker_reconciliation_unavailable',
+            detail=f'Speaker registry could not be inspected: {type(exc).__name__}',
+        ))
     return ReconciliationReport(
-        checked_sessions=len(sessions),
+        checked_sessions=len(sessions) + len(archived_directories),
         issue_count=len(issues),
         issues=issues,
         repair_applied=False,
@@ -268,26 +373,31 @@ def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def create_structured_backup(progress: Callable[[int, int, str], None] | None = None) -> dict:
+def _create_structured_backup_unlocked(progress: Callable[[int, int, str], None] | None = None) -> dict:
     root = Path(settings.data_root)
     backup_root = Path(settings.backup_root)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
-    target = backup_root / stamp
+    final_target = backup_root / stamp
+    target = backup_root / f'.{stamp}.incomplete'
     target.mkdir(parents=True, exist_ok=False)
     manifest: list[dict] = []
 
     def source_files(source_root: Path) -> list[Path]:
-        if not source_root.exists():
+        try:
+            source_root.stat()
+        except FileNotFoundError:
             return []
         files: list[Path] = []
-        for source in sorted(source_root.rglob('*')):
-            if source.name.startswith('._'):
-                continue
-            try:
-                if source.is_file():
+        def fail(error):
+            raise error
+        for directory, dirs, names in os.walk(source_root, onerror=fail):
+            dirs[:] = sorted(name for name in dirs if not name.startswith('._'))
+            for name in sorted(names):
+                if name.startswith('._'):
+                    continue
+                source = Path(directory) / name
+                if stat.S_ISREG(source.stat().st_mode):
                     files.append(source)
-            except OSError:
-                continue
         return files
 
     authoritative_files = [
@@ -305,18 +415,19 @@ def create_structured_backup(progress: Callable[[int, int, str], None] | None = 
     }
     appdata_files: list[Path] = []
     for source in source_files(appdata):
-        try:
-            resolved = source.resolve()
-            if any(resolved == excluded or excluded in resolved.parents for excluded in excluded_roots):
-                continue
-        except OSError:
+        resolved = source.resolve()
+        if any(resolved == excluded or excluded in resolved.parents for excluded in excluded_roots):
             continue
         appdata_files.append(source)
 
-    from services.pipeline import chroma_collection
+    from services.pipeline import chroma_collections_for_backup
 
-    collection = chroma_collection()
-    vector_count = collection.count()
+    collections = chroma_collections_for_backup()
+    collection_manifest = [
+        {'name': collection.name, 'metadata': collection.metadata, 'count': collection.count()}
+        for collection in collections
+    ]
+    vector_count = sum(item['count'] for item in collection_manifest)
     total_items = len(authoritative_files) + len(appdata_files) + vector_count
     processed = 0
 
@@ -333,6 +444,8 @@ def create_structured_backup(progress: Callable[[int, int, str], None] | None = 
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         digest = _sha256_file(destination)
+        if digest != _sha256_file(source):
+            raise RuntimeError(f'Backup source changed during copy: {relative}')
         manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': digest})
         processed += 1
         report(f'Copied {relative}')
@@ -341,6 +454,8 @@ def create_structured_backup(progress: Callable[[int, int, str], None] | None = 
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+        if _sha256_file(destination) != _sha256_file(source):
+            raise RuntimeError(f'Backup source changed during copy: {relative}')
         manifest.append({'path': str(relative), 'bytes': destination.stat().st_size, 'sha256': _sha256_file(destination)})
         processed += 1
         report(f'Copied {relative}')
@@ -349,28 +464,34 @@ def create_structured_backup(progress: Callable[[int, int, str], None] | None = 
     vector_export.parent.mkdir(parents=True, exist_ok=True)
     with vector_export.open('w', encoding='utf-8') as handle:
         page_size = 128
-        for offset in range(0, vector_count, page_size):
-            vector_data = collection.get(
-                limit=min(page_size, vector_count - offset),
-                offset=offset,
-                include=['documents', 'metadatas', 'embeddings'],
-            )
-            vector_documents = vector_data.get('documents') or []
-            vector_metadatas = vector_data.get('metadatas') or []
-            vector_embeddings = vector_data.get('embeddings')
-            for index, identifier in enumerate(vector_data.get('ids') or []):
-                embedding = vector_embeddings[index]
-                record = {
-                    'id': identifier,
-                    'document': vector_documents[index],
-                    'metadata': vector_metadatas[index],
-                    'embedding': embedding.tolist() if hasattr(embedding, 'tolist') else embedding,
-                }
-                handle.write(json.dumps(record, ensure_ascii=False) + '\n')
-                processed += 1
-            report(f'Exported {min(offset + page_size, vector_count)} of {vector_count} Chroma records')
+        for collection, descriptor in zip(collections, collection_manifest):
+            exported = 0
+            for offset in range(0, descriptor['count'], page_size):
+                vector_data = collection.get(
+                    limit=min(page_size, descriptor['count'] - offset), offset=offset,
+                    include=['documents', 'metadatas', 'embeddings'],
+                )
+                ids = vector_data.get('ids') or []
+                documents = vector_data.get('documents')
+                metadatas = vector_data.get('metadatas')
+                embeddings = vector_data.get('embeddings')
+                if len(ids) != min(page_size, descriptor['count'] - offset) or embeddings is None or len(embeddings) != len(ids):
+                    raise RuntimeError(f'Incomplete vector export: {collection.name}')
+                for index, identifier in enumerate(ids):
+                    embedding = embeddings[index]
+                    record = {
+                        'collection': collection.name, 'id': identifier,
+                        'document': documents[index] if documents is not None else None,
+                        'metadata': metadatas[index] if metadatas is not None else None,
+                        'embedding': embedding.tolist() if hasattr(embedding, 'tolist') else embedding,
+                    }
+                    handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+                    processed += 1
+                    exported += 1
+                report(f'Exported {exported} records from {collection.name}')
+            if exported != descriptor['count'] or collection.count() != exported:
+                raise RuntimeError(f'Collection changed during backup: {collection.name}')
         handle.flush()
-        import os
         os.fsync(handle.fileno())
     manifest.append({
         'path': str(vector_export.relative_to(target)),
@@ -386,9 +507,17 @@ def create_structured_backup(progress: Callable[[int, int, str], None] | None = 
         'created_at': datetime.now(timezone.utc).isoformat(),
         'backup_kind': 'full-rebuildable',
         'chroma_collection': settings.chroma_collection,
+        'chroma_collections': collection_manifest,
+        'backup_schema_version': 2,
         'same_volume_as_source': same_volume,
         'files': manifest,
     }, indent=2))
+    os.replace(target, final_target)
+    directory_fd = os.open(backup_root, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
     return {
         'backup_id': stamp,
         'backup_kind': 'full-rebuildable',
@@ -397,3 +526,8 @@ def create_structured_backup(progress: Callable[[int, int, str], None] | None = 
         'same_volume_as_source': same_volume,
         'warning': 'Configure BACKUP_ROOT on another encrypted volume for disaster recovery.' if same_volume else '',
     }
+
+
+def create_structured_backup(progress: Callable[[int, int, str], None] | None = None) -> dict:
+    with library_write_lock():
+        return _create_structured_backup_unlocked(progress)

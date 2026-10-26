@@ -19,6 +19,16 @@ def test_chroma_telemetry_is_disabled_in_production():
     assert 'ANONYMIZED_TELEMETRY: "false"' in compose
 
 
+def test_chroma_remains_embedded_and_is_not_exposed_as_a_network_service():
+    root = Path(__file__).parents[1]
+    pipeline = (root / 'app' / 'services' / 'pipeline.py').read_text(encoding='utf-8')
+    compose = (root / 'docker-compose.yml').read_text(encoding='utf-8')
+    assert 'chromadb.PersistentClient(' in pipeline
+    assert 'chromadb.HttpClient(' not in pipeline
+    assert 'chroma:' not in compose
+    assert '8000:8000' not in compose
+
+
 def test_native_bridges_are_detached_and_read_the_protected_token():
     root = Path(__file__).parents[1]
     launcher = (root / 'scripts' / 'start.sh').read_text()

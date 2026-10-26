@@ -180,10 +180,10 @@ def test_active_index_versions_excludes_future_unlock_at():
     assert active_index_versions().get(session.name) == 'v1'
 
 
-def test_active_index_versions_fails_open_on_malformed_unlock_at():
+def test_active_index_versions_fails_closed_on_malformed_unlock_at():
     _, session = create_session_dir('Malformed unlock test')
     update_processing_state(session, embedded=True, active_content_version='v1', unlock_at='not-a-real-date')
-    assert active_index_versions().get(session.name) == 'v1'
+    assert session.name not in active_index_versions()
 
 
 def test_query_context_and_lexical_context_both_exclude_sealed_session(monkeypatch):
@@ -284,7 +284,7 @@ def test_sample_quiz_prompt_only_uses_active_sessions_and_strips_evidence_prefix
     assert active.name in seen_sessions
 
 
-def test_active_index_versions_treats_non_string_unlock_at_as_unlocked():
+def test_active_index_versions_treats_non_string_unlock_at_as_sealed():
     _, session = create_session_dir('Non-string unlock manifest test')
     update_processing_state(session, embedded=True, active_content_version='v1', unlock_at=12345)
-    assert active_index_versions().get(session.name) == 'v1'
+    assert session.name not in active_index_versions()
