@@ -17,3 +17,5 @@ worker
 host_bridge
 host_helper
 host_tools
+evals/private
+reports/private

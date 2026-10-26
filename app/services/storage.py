@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import errno
+import hashlib
 import os
 import shutil
 import tempfile
@@ -20,6 +22,37 @@ from config import settings
 
 class LibraryBusyError(RuntimeError):
     pass
+
+
+def retry_filesystem(operation, *, missing_ok_to_retry: bool = False):
+    """Retry only idempotent operations and explicitly transient OS failures.
+
+    Permission, full-disk, invalid JSON, and persistent failures remain errors.
+    Never wrap an append or streamed upload in this helper.
+    """
+    transient = {errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.EIO, errno.ETIMEDOUT, errno.ESTALE}
+    for attempt, delay in enumerate((0, .02, .05, .1, .25, .5)):
+        if delay:
+            time.sleep(delay)
+        try:
+            return operation()
+        except OSError as exc:
+            retryable = exc.errno in transient or (missing_ok_to_retry and isinstance(exc, FileNotFoundError))
+            if not retryable or attempt == 5:
+                raise
+
+
+def verify_saved_file(path: Path, expected_bytes: int, expected_sha256: str) -> None:
+    def verify():
+        digest = hashlib.sha256()
+        size = 0
+        with path.open('rb') as handle:
+            while chunk := handle.read(1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+        if not size or size != expected_bytes or digest.hexdigest() != expected_sha256:
+            raise ValueError('Saved recording did not match the received audio')
+    retry_filesystem(verify, missing_ok_to_retry=True)
 
 
 @contextmanager
@@ -89,6 +122,10 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
+    retry_filesystem(lambda: _atomic_write_text_once(path, text))
+
+
+def _atomic_write_text_once(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent)
     temp_path = Path(temp_name)
@@ -112,6 +149,10 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    retry_filesystem(lambda: _atomic_write_bytes_once(path, payload))
+
+
+def _atomic_write_bytes_once(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent)
     temp_path = Path(temp_name)
@@ -139,17 +180,10 @@ def update_processing_state(session_path: Path, **updates: Any) -> None:
     # External volumes can briefly report the freshly replaced state file as
     # missing even after the durable create has completed. Avoid the
     # exists-then-open race and give the volume a bounded chance to make the
-    # directory entry visible before falling back to the existing
-    # missing-state behavior.
-    state = {}
-    for delay in (0, 0.02, 0.05, 0.1, 0.25, 0.5):
-        if delay:
-            time.sleep(delay)
-        try:
-            state = load_json(state_path)
-            break
-        except FileNotFoundError:
-            continue
+    # directory entry visible before failing closed.
+    # Do not replace unreadable/missing existing state with an empty document:
+    # that can silently erase seal, consent, and active vector-version fields.
+    state = retry_filesystem(lambda: load_json(state_path), missing_ok_to_retry=True)
     state.update(updates)
     state['state_version'] = max(int(state.get('state_version', 2)), 4)
     state['updated_at'] = datetime.now(timezone.utc).isoformat()

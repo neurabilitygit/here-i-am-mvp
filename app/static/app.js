@@ -1095,8 +1095,61 @@ function updateRecordTime() {
   byId('record-time').textContent = `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
 }
 
+function persistRecordingChunk(blob, index) {
+  if (!state.recordDraftId) state.recordDraftId = globalThis.crypto.randomUUID();
+  const id = state.recordDraftId;
+  const generation = state.recordSession;
+  const key = `${id}:${index}`;
+  if (state.recordDraftStored.has(key)) return;
+  const metadata = {
+    title: byId('record-title').value,
+    mode: document.querySelector('input[name="record-mode"]:checked')?.value || 'solo',
+    seal: byId('record-seal').checked, sealDate: byId('record-seal-date').value,
+  };
+  state.recordDraftWrites = state.recordDraftWrites.then(() => window.RecordingDrafts.append(id, index, blob, metadata)).then(() => {
+    if (state.recordDraftId === id && state.recordSession === generation) state.recordDraftStored.add(key);
+  }).catch((error) => {
+    if (state.recordDraftId !== id || state.recordSession !== generation) return;
+    console.warn('[recording] recovery copy unavailable', error.name, error.message);
+    state.recordDraftFailed = true;
+    byId('recording-status').textContent = 'Keep this page open until saving finishes. This browser could not protect a recovery copy.';
+  });
+}
+
+async function restoreRecordingDraft() {
+  if (state.recordDraftId || state.recordedChunks.length || state.mediaRecorder || state.uploadInFlight) return;
+  const generation = state.recordSession;
+  try {
+    const draft = await window.RecordingDrafts.oldest();
+    if (!draft?.chunks?.length || state.recordSession !== generation || state.recordDraftId || state.recordedChunks.length || state.mediaRecorder || state.uploadInFlight) return;
+    if (!draft.complete) {
+      byId('recording-status').textContent = 'An interrupted recording copy remains on this device, but its completeness could not be verified. Keep this site data for recovery.';
+      activity('recording_draft_incomplete', {});
+      return;
+    }
+    state.recordSession += 1;
+    state.recordDraftId = draft.id;
+    state.recordDraftStored = new Set(draft.chunks.map((_, index) => `${draft.id}:${index}`));
+    state.recordedChunks = draft.chunks;
+    byId('record-title').value = draft.title || '';
+    byId(draft.mode === 'conversation' ? 'record-mode-conversation' : 'record-mode-solo').checked = true;
+    byId('record-conversation-consent').checked = false;
+    byId('record-conversation-consent-card').hidden = draft.mode !== 'conversation';
+    byId('record-seal').checked = Boolean(draft.seal);
+    byId('record-seal-date').value = draft.sealDate || '';
+    byId('record-seal-date-field').hidden = !draft.seal;
+    byId('record-retry').hidden = false;
+    byId('record-start').disabled = true;
+    byId('recording-status').textContent = 'A recording was recovered on this device. Choose Try saving again. Conversation permission must be confirmed again.';
+    activity('recording_draft_recovered', {chunks: draft.chunks.length});
+  } catch (_) {
+    activity('recording_draft_unavailable', {});
+  }
+}
+
 async function startRecording() {
   try {
+    if (state.recordedChunks.length || state.uploadInFlight) throw new Error('Save the waiting recording before starting another.');
     const mode=document.querySelector('input[name="record-mode"]:checked')?.value||'solo';
     if(mode==='conversation'&&!byId('record-conversation-consent').checked)throw new Error('Confirm that everyone has agreed to speaker recognition before recording a conversation');
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('This browser cannot record audio');
@@ -1108,9 +1161,10 @@ async function startRecording() {
     const candidates=isSafari?['audio/mp4','audio/webm;codecs=opus','audio/webm']:['audio/webm;codecs=opus','audio/webm','audio/mp4'];
     const mimeType=candidates.find((item)=>MediaRecorder.isTypeSupported(item))||'';
     state.mediaRecorder=new MediaRecorder(state.mediaStream,mimeType?{mimeType}:undefined); state.recordedChunks=[];
+    state.recordDraftId = globalThis.crypto.randomUUID(); state.recordDraftFailed = false; state.recordDraftStored = new Set();
     state.recordStopRequested=false; state.recordFinalizing=false; state.recordError='';
     state.mediaRecorder.ondataavailable=(event)=>{
-      if(event.data.size){state.recordedChunks.push(event.data);console.info('[recording] audio chunk ready',{bytes:event.data.size,type:event.data.type});}
+      if(event.data.size){state.recordedChunks.push(event.data);persistRecordingChunk(event.data,state.recordedChunks.length-1);console.info('[recording] audio chunk ready',{bytes:event.data.size,type:event.data.type});}
     };
     state.mediaRecorder.onerror=(event)=>{
       state.recordError=event.error?.message||'The browser stopped the recording unexpectedly';
@@ -1166,6 +1220,26 @@ async function finalizeRecording(){
 
 async function uploadRecording({unexpected=false}={}){
   const recordSession=state.recordSession;
+  await state.recordDraftWrites;
+  if(state.recordSession!==recordSession)return;
+  // Also protect captured blobs restored or supplied before draft support.
+  state.recordedChunks.forEach((blob, index) => persistRecordingChunk(blob, index));
+  const draftId = state.recordDraftId;
+  await state.recordDraftWrites;
+  if(state.recordSession!==recordSession)return;
+  if (state.recordedChunks.length) {
+    try {
+      await window.RecordingDrafts.finalize(draftId, state.recordedChunks.length, {
+        title: byId('record-title').value,
+        mode: document.querySelector('input[name="record-mode"]:checked')?.value || 'solo',
+        seal: byId('record-seal').checked, sealDate: byId('record-seal-date').value,
+      });
+    } catch (_) {
+      if(state.recordSession!==recordSession)return;
+      state.recordDraftFailed = true;
+    }
+  }
+  if(state.recordSession!==recordSession)return;
   let response;
   try{
     if(!state.recordedChunks.length)throw new Error(state.recordError||'No sound was captured');
@@ -1173,6 +1247,7 @@ async function uploadRecording({unexpected=false}={}){
     form.append('file',new Blob(state.recordedChunks,{type}),type.includes('mp4')?'memory.m4a':'memory.webm');
     const title=byId('record-title').value.trim(); if(title)form.append('title',title);
     const recordingMode=document.querySelector('input[name="record-mode"]:checked')?.value||'solo';
+    if(recordingMode==='conversation'&&!byId('record-conversation-consent').checked)throw new Error('Confirm conversation permission before saving this recovered recording');
     form.append('recording_mode',recordingMode);
     form.append('confirm_conversation_cloud',String(recordingMode!=='conversation'||byId('record-conversation-consent').checked));
     response = await api('/api/recordings/upload',{method:'POST',body:form});
@@ -1187,12 +1262,18 @@ async function uploadRecording({unexpected=false}={}){
     // was in flight -- if so, its UI/media state belongs to that new
     // recording now, and this stale failure must not touch or reset it.
     if(state.recordSession!==recordSession)return;
-    byId('recording-status').textContent=`Your recording is still here on this device, but saving it failed: ${error.message}`;
+    byId('recording-status').textContent=`Your recording is still here on this device, but saving it failed: ${error.message}${state.recordDraftFailed?' Keep this page open; the recovery copy could not be saved.':''}`;
     resetRecorderAfterFailedUpload();
     byId('record-retry').hidden=false;
     return;
   }
   if(state.recordSession!==recordSession)return;
+  if (draftId) {
+    try { await window.RecordingDrafts.remove(draftId); }
+    catch (_) { activity('recording_draft_cleanup_failed', {}); }
+  }
+  if(state.recordSession!==recordSession)return;
+  state.recordDraftId = '';
   byId('record-retry').hidden=true;
 
   // From here on, the recording is already durably saved on the server —
@@ -1221,18 +1302,18 @@ async function uploadRecording({unexpected=false}={}){
 function resetRecorder(){
   clearInterval(state.recordTimer); cancelAnimationFrame(state.recordAnimation); releaseRecordingStream(); state.mediaRecorder=null;state.mediaStream=null;state.recordedChunks=[];
   state.recordStopRequested=false;state.recordFinalizing=false;state.recordError='';
-  byId('record-start').disabled=false;byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
+  byId('record-start').disabled=Boolean(state.recordedChunks.length);byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
   byId('record-pause').disabled=true;byId('record-stop').disabled=true;byId('record-pause').textContent='Pause';byId('record-time').textContent='00:00';drawIdleWave();setPresence('Ready to talk','resting');
 }
 
 function resetRecorderAfterFailedUpload(){
   clearInterval(state.recordTimer); cancelAnimationFrame(state.recordAnimation); releaseRecordingStream(); state.mediaRecorder=null;state.mediaStream=null;
   state.recordStopRequested=false;state.recordFinalizing=false;
-  byId('record-start').disabled=false;byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
+  byId('record-start').disabled=Boolean(state.recordedChunks.length);byId('record-start').classList.remove('active');byId('record-start').querySelector('span:last-child').textContent='Record';
   byId('record-pause').disabled=true;byId('record-stop').disabled=true;byId('record-pause').textContent='Pause';byId('record-time').textContent='00:00';drawIdleWave();setPresence('Ready to talk','resting');
   // Deliberately does not clear state.recordedChunks/state.recordError: a
   // failed upload must never discard the captured audio. retrySavingRecording()
-  // reuses it; starting a fresh recording overwrites it naturally.
+  // reuses it; starting another recording is blocked until it is saved.
 }
 
 async function retrySavingRecording(){
@@ -1838,6 +1919,7 @@ async function initialize(){
   try{const status=await(await fetch('/api/auth/status')).json();authOk=!status.required||Boolean(status.authenticated);}catch(error){authOk=true;}
   if(!authOk){showLoginDialog();return;}
   await bootApp();
+  await restoreRecordingDraft();
 }
 
 initialize();

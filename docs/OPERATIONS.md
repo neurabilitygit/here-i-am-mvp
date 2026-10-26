@@ -68,6 +68,26 @@ Before local synthesis, the app unloads Gemma only when it is resident, leaving 
 
 ## Recovery
 
+### Recording drafts and bounded retries (candidate, not deployed)
+
+Emitted recording chunks are saved to origin-scoped IndexedDB until the server
+acknowledges saving the upload. Reopen the same site/browser profile to recover
+a draft; recovery does not upload automatically. Conversation permission must
+be confirmed again. Website-data clearing, browser eviction, and private mode
+can remove drafts. Safari's single-blob MP4 path cannot persist audio before
+the recorder emits its final blob, so this is not full crash protection during
+an active recording. Keep the page open if the recovery-copy warning appears.
+Only a finalized draft with every expected chunk is offered for retry. Incomplete
+copies are retained with a warning, not silently treated as complete recordings.
+
+Idempotent filesystem writes retry transient failures at most six times, with
+under one second of backoff. Full-disk and permission errors fail immediately.
+Missing processing state is not silently recreated. Saved source audio is
+reread and matched against received bytes and SHA-256. Interrupted transfers
+remain recoverable but are not ready memories. Upload retries after a lost
+server acknowledgement can still create duplicate sessions; server-side
+idempotent upload IDs remain follow-up work.
+
 - Interrupted jobs are reported in job history and may be retried.
 - Run reconciliation before and after maintenance.
 - Restore authoritative files first; rebuild metadata/chunks/index afterward.

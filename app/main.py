@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -26,6 +28,7 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 from config import settings
+from services.storage import verify_saved_file
 from models.schemas import AnswerFeedback, AuthLoginRequest, AuthStatus, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, ClientActivityEvent, GenericStatus, PreferencesUpdate, ProviderStatus, PromptOfTheDay, QuizPrompt, RecordingUploadResponse, ReconciliationReport, SealRequest, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
 from services.prompts import prompt_of_the_day
 from services.auth import SESSION_COOKIE_NAME, is_locked_out, issue_token, passphrase_configured, register_failure, register_success, requires_auth, revoke_token, validate_token, verify_passphrase
@@ -340,6 +343,7 @@ async def upload_recording(
         upload_status='receiving',
     )
     total = 0
+    source_digest = hashlib.sha256()
     try:
         with source_path.open('wb') as buffer:
             while chunk := await file.read(1024 * 1024):
@@ -347,6 +351,7 @@ async def upload_recording(
                 if total > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail='Recording exceeds the configured upload limit')
                 buffer.write(chunk)
+                source_digest.update(chunk)
             buffer.flush()
             os.fsync(buffer.fileno())
         directory_fd = os.open(session_dir, os.O_RDONLY)
@@ -354,15 +359,21 @@ async def upload_recording(
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
+        await run_in_threadpool(verify_saved_file, source_path, total, source_digest.hexdigest())
     except Exception:
-        shutil.rmtree(session_dir, ignore_errors=True)
+        # Keep captured bytes for operator recovery; never label a partial
+        # transfer as a validated recording or discard its source silently.
+        try:
+            update_processing_state(session_dir, recorded=False, upload_status='interrupted', upload_error='source_not_verified')
+        except OSError:
+            logger.warning('Could not record interrupted upload state session=%s', session_id)
         raise
 
-    update_processing_state(session_dir, upload_status='validating', source_bytes=total)
+    update_processing_state(session_dir, upload_status='validating', source_bytes=total, source_sha256=source_digest.hexdigest())
 
     flac_path = session_dir / 'recording.flac'
     command = [
-        'ffmpeg', '-y', '-i', str(source_path), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'flac', str(flac_path)
+        'ffmpeg', '-y', '-xerror', '-i', str(source_path), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'flac', str(flac_path)
     ]
     try:
         completed = await run_in_threadpool(
@@ -401,6 +412,8 @@ async def upload_recording(
             text=True,
             timeout=30,
         )
+        if duration_result.returncode != 0:
+            raise ValueError('Audio duration probe failed')
         duration = float(json.loads(duration_result.stdout)['format']['duration'])
     except (subprocess.TimeoutExpired, KeyError, ValueError, json.JSONDecodeError) as exc:
         flac_path.unlink(missing_ok=True)
@@ -412,7 +425,7 @@ async def upload_recording(
             recording_mode=recording_mode,
             status='needs_attention',
         )
-    if duration <= 0 or duration > settings.max_upload_seconds:
+    if not math.isfinite(duration) or duration <= 0 or duration > settings.max_upload_seconds:
         flac_path.unlink(missing_ok=True)
         update_processing_state(session_dir, upload_status='validation_failed', upload_error='duration_out_of_range')
         return RecordingUploadResponse(
@@ -450,7 +463,7 @@ def _retry_recording_validation(session_id: str) -> dict:
         update_processing_state(session, upload_status='validating', upload_error='')
         completed = subprocess.run(
             [
-                'ffmpeg', '-y', '-i', str(paths['source_audio']), '-vn', '-ac', '1', '-ar', '16000',
+                'ffmpeg', '-y', '-xerror', '-i', str(paths['source_audio']), '-vn', '-ac', '1', '-ar', '16000',
                 '-c:a', 'flac', str(paths['audio']),
             ],
             capture_output=True,
@@ -468,12 +481,14 @@ def _retry_recording_validation(session_id: str) -> dict:
             timeout=30,
         )
         try:
+            if probe.returncode != 0:
+                raise ValueError('Audio duration probe failed')
             duration = float(json.loads(probe.stdout)['format']['duration'])
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             paths['audio'].unlink(missing_ok=True)
             update_processing_state(session, upload_status='validation_failed', upload_error='duration_unverified')
             raise ValueError('The saved original duration still could not be verified') from exc
-        if duration <= 0 or duration > settings.max_upload_seconds:
+        if not math.isfinite(duration) or duration <= 0 or duration > settings.max_upload_seconds:
             paths['audio'].unlink(missing_ok=True)
             update_processing_state(session, upload_status='validation_failed', upload_error='duration_out_of_range')
             raise ValueError('The recording duration is outside the configured processing limit')
