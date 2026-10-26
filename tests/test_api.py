@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from io import BytesIO
+import json
 import time
 import wave
 
@@ -92,6 +93,9 @@ def test_audio_upload_enters_the_unprocessed_memory_queue():
     assert 'flac_path' not in payload
     assert 'session_path' not in payload
     assert (Path(settings.sessions_dir) / payload['session_id'] / 'recording.flac').exists()
+    saved_state = json.loads((Path(settings.sessions_dir) / payload['session_id'] / 'processing_state.json').read_text())
+    import hashlib
+    assert saved_state['source_sha256'] == hashlib.sha256(audio.getvalue()).hexdigest()
     status = client.get('/api/memory-batch/status').json()
     assert status['queued_recordings'] >= 1
 

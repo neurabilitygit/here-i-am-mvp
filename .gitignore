@@ -15,3 +15,6 @@ appdata/
 /models/
 /data/models/
 tmp/
+# Private benchmark evidence, recordings, and reviewed memoir facts stay local.
+evals/private/
+reports/private/

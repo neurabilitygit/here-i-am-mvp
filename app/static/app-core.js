@@ -10,6 +10,8 @@ const state = {
   mediaRecorder: null, mediaStream: null, recordedChunks: [], recordStartedAt: 0,
   recordTimer: null, recordAnimation: null, recordStopRequested: false,
   recordFinalizing: false, recordError: '',
+  recordDraftId: '', recordDraftWrites: Promise.resolve(), recordDraftFailed: false,
+  recordDraftStored: new Set(),
   chatAbort: null, chatGeneration: 0,
   voiceAbort: null, voiceRequestId: null, voiceTimeout: null,
   voiceAnswerText: '', voiceGeneration: 0,

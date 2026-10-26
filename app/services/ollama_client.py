@@ -18,6 +18,23 @@ class OllamaClient:
         self.analysis_model = analysis_model
         self.embedding_model = embedding_model
         self._embedding_context = threading.local()
+        self._metrics = threading.local()
+
+    def last_metrics(self, stage: str) -> dict:
+        return dict(getattr(self._metrics, stage, {}))
+
+    def reset_metrics(self) -> None:
+        self._metrics.embedding = {}
+        self._metrics.generation = {}
+
+    def _record_metrics(self, stage: str, data: dict, elapsed: float) -> None:
+        metrics = {'wall_seconds': elapsed, 'model': data.get('model', '')}
+        for field in ('total_duration', 'load_duration', 'prompt_eval_duration', 'eval_duration'):
+            value = data.get(field)
+            metrics[field.replace('_duration', '_seconds')] = value / 1e9 if isinstance(value, (int, float)) else None
+        for field in ('prompt_eval_count', 'eval_count'):
+            metrics[field] = data.get(field)
+        setattr(self._metrics, stage, metrics)
 
     def is_reachable(self) -> bool:
         try:
@@ -100,6 +117,7 @@ class OllamaClient:
         resp.raise_for_status()
         data = resp.json()
         elapsed = time.time() - start
+        self._record_metrics('generation', data, elapsed)
         print(f"[TIMING] ollama_generate model={model} elapsed={elapsed:.2f}s")
         return data.get("response", "").strip()
 
@@ -263,6 +281,7 @@ class OllamaClient:
         data = legacy.json()
         elapsed = time.time() - start
         print(f"[TIMING] ollama_embed_legacy model={self.embedding_model} elapsed={elapsed:.2f}s")
+        self._record_metrics('embedding', data, elapsed)
         embedding = data.get("embedding")
         if not embedding:
             raise RuntimeError("Ollama legacy embeddings response did not contain 'embedding'.")
@@ -298,6 +317,7 @@ class OllamaClient:
         embeddings = data.get("embeddings")
         elapsed = time.time() - start
         print(f"[TIMING] ollama_embed model={self.embedding_model} count={len(values)} elapsed={elapsed:.2f}s")
+        self._record_metrics('embedding', data, elapsed)
         if not embeddings or not isinstance(embeddings, list):
             raise RuntimeError("Ollama embed response did not contain 'embeddings'.")
         return embeddings[0] if single else embeddings
