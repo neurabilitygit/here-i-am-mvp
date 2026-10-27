@@ -373,3 +373,68 @@ production and pilot both still had 208 vectors, and production health was OK.
 Private voice/phone evidence and the sample are in ignored
 `reports/private/native-voice-20261027/`. No credentials or personal audio are
 committed. No APFS change, production cutover, or Chroma deletion occurred.
+
+### Physical iPhone acceptance and backup/rollback rehearsal (2026-10-27)
+
+The user confirmed hearing the complete cloned-voice sample on the physical
+iPhone, then reported one new recording waiting. The pilot logged a successful
+upload. Its retained M4A source matched the stored SHA-256, and the derived FLAC
+was valid mono 16 kHz audio lasting 14.036 seconds. It is safely queued with
+`upload_status=ready`; transcription, analysis and embedding remain pending by
+design. This clears physical playback and recording-upload acceptance, not
+transcription accuracy or conversational voice-latency acceptance.
+
+With authorization to proceed, only the known iPhone pilot supervisor was stopped.
+Production Docker, the production voice bridge and port-443 route were untouched.
+A full logical pilot backup was stored on the Mac's existing FileVault-encrypted
+internal volume, and restore targeted a new folder on the existing ExFAT external
+volume. This is a second-volume backup, not an APFS migration or off-site backup.
+
+The rehearsal found and fixed a real cross-filesystem restore bug:
+`shutil.copy2` attempted macOS `chflags` on ExFAT and failed with `EINVAL` after
+copying the first file. Restore now copies portable permissions/timestamps only,
+flushes and verifies each destination against the manifest. It does not blanket-
+ignore filesystem errors. Regression tests cover unsupported flags, corrupted
+destination bytes, and permission failures. The first backup and partial restore
+were retained, and the second attempt used new destinations.
+
+The second restore passed file/vector checks, then the harness incorrectly counted
+73 AppleDouble sidecar files as additional sessions. Session counting now requires
+real directories and excludes `._` sidecars, with a regression test. Only the
+remaining restored-app check was resumed; the original failed-stage report is
+retained for audit, rather than claiming a single uninterrupted successful run.
+
+Combined acceptance evidence:
+
+| Check | Result |
+|---|---|
+| Backup | 574 manifest files, 732,741,445 bytes; 2.85 seconds |
+| Restore | 5.11 seconds for copy/rebuild; additional verification separate |
+| Restored ordinary files | 573 checksum/size matches, including the iPhone recording |
+| Private runtime recovery | 4 independently verified files; no credentials logged |
+| Memory library | 73 sessions visible in restored WebKit UI |
+| Chroma | 208 vectors; IDs, documents, metadata, embeddings and collection metadata identical |
+| Retrieval | 8 stored-vector probes; identical IDs and distances |
+| Overwrite guard | Restoring into the occupied target refused |
+| Recording delivery | Authenticated audio checksum identical; browser loaded 14.036-second audio |
+| Restored UI | Login, waiting status, memory dialog passed; no JavaScript errors |
+| Rollback | Restored server stopped; original pilot restarted on the unchanged private route |
+| Preservation | Original pilot credentials/session store and sample unchanged; 573 production source files unchanged |
+| Production | Health OK; 208 vectors retained; production route unchanged |
+
+The original iPhone pilot is available again with the same temporary passphrase.
+The new recording remains in that pilot, not in production. The voice model is
+unloaded while idle. No Chroma record or original recording was deleted.
+
+Final backend regression: **204 passed**, 14 upstream deprecation warnings;
+Ruff, JavaScript syntax and whitespace checks passed. Chroma/PostHog's existing
+telemetry-signature warnings appeared with telemetry disabled and did not stop
+the logical export or vector verification. Compatibility cleanup remains open.
+
+Private evidence is under ignored `reports/private/restore-rehearsal-20261027/`
+and `reports/private/restore-rehearsal-20261027-v2/`; the successful restored data
+is `phone-backup-restored-20261027-v2` beneath the existing external-drive pilot
+root. Backups and failed/complete restore copies are retained. Source code,
+dependency artifacts, operating-system setup and downloaded models still need
+a production recovery/packaging procedure. The next gate is native service
+packaging and a reviewed production cutover/rollback plan, not automatic migration.

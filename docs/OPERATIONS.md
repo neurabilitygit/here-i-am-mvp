@@ -166,6 +166,45 @@ time advancement, complete playback, retained answer, and the Remember screen.
 Emulation is not physical iPhone speaker or microphone confirmation. The user
 must hear the sample and make/save a short recording on their actual device.
 
+#### Backup, restore, and rollback rehearsal
+
+`scripts/rehearse_native_backup.py` accepts only a marked pilot with independent
+private state, new backup/report and restore destinations, and an explicitly
+selected validated recording. Stop the known pilot supervisor first; the runner
+requires pilot ports 8792/8793 and restored-test port 8794 to be free. It never
+stops services itself or changes Tailscale routes. Use
+`--confirm-isolated-rehearsal` to acknowledge the copied-library writes.
+
+Required arguments: `--data-root`, `--state-dir`, `--restore-root`,
+`--report-dir`, and `--recording-id`. The report directory must be private and
+outside both source and restored data roots. Prefer a different encrypted volume
+for backup storage; no filesystem conversion is required. The runner:
+
+- Creates the full logical data backup, including every Chroma collection.
+- Saves an independent private recovery supplement for the pilot passphrase
+  hash, session-token store, bridge token, and accepted voice sample. Keep this
+  supplement encrypted and private; never commit it. Source/model packages and
+  operating-system tools are not included in the data backup.
+- Restores only into a new empty target, verifies every restored file, all vector
+  fields and collection metadata, and compares stored-vector retrieval probes.
+- Checks that a repeat restore refuses the now-occupied target without overwriting.
+- Starts only the restored app on loopback 8794 with fresh test authentication.
+  WebKit checks the library, pending recording, and playable audio metadata; the
+  authenticated audio response must match the original file checksum.
+- Stops its restored test server, retaining all data, backups and evidence.
+
+The operator then restarts the original pilot supervisor and verifies its
+credentials/session store, sample, saved recording, private route, and production
+health. This is a pilot rollback rehearsal, not a production cutover. Failed or
+interrupted restore folders are retained and must not be reused: choose another
+new destination. Do not delete Chroma records as part of rollback.
+
+Restore copies file contents, permissions and timestamps and verifies destination
+checksums after flushing each file. It intentionally does not copy macOS-specific
+Finder flags or extended attributes; those are outside the logical manifest and
+can fail with `EINVAL` when restoring from the Mac to ExFAT. Permission, disk-full,
+copy and integrity errors are still raised, not silently ignored.
+
 ### Local workload controls (candidate, not deployed)
 
 The candidate admits only one heavyweight app-owned local operation at a time:

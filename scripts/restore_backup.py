@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -15,6 +16,24 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b''):
             value.update(chunk)
     return value.hexdigest()
+
+
+def restore_file(source: Path, destination: Path, *, expected_bytes: int, expected_sha256: str) -> None:
+    """Restore portable file attributes, not filesystem-specific macOS flags.
+
+    copy2/copy-stat can raise EINVAL when chflags crosses from the Mac to ExFAT,
+    even though the file contents were copied. Permissions and timestamps are
+    portable here; Finder flags/xattrs are not part of the backup manifest.
+    Do not suppress copy, permission, full-disk, or integrity errors.
+    """
+    source_stat = source.stat()
+    shutil.copyfile(source, destination)
+    shutil.copymode(source, destination)
+    os.utime(destination, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+    with destination.open('rb') as handle:
+        os.fsync(handle.fileno())
+    if destination.stat().st_size != expected_bytes or digest(destination) != expected_sha256:
+        raise RuntimeError(f'Restored file verification failed: {destination.name}')
 
 
 def main() -> int:
@@ -83,7 +102,7 @@ def main() -> int:
             continue
         destination = args.data_root / record['path']
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        restore_file(source, destination, expected_bytes=record['bytes'], expected_sha256=record['sha256'])
 
     if vector_export.exists():
         import chromadb
