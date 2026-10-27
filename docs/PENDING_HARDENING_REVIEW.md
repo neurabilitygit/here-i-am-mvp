@@ -439,6 +439,70 @@ dependency artifacts, operating-system setup and downloaded models still need
 a production recovery/packaging procedure. The next gate is native service
 packaging and a reviewed production cutover/rollback plan, not automatic migration.
 
+### Managed native service acceptance (2026-10-27)
+
+The candidate now runs from immutable source release `442ff70` in a separate
+durable backend runtime under the Mac's existing Application Support directory.
+The clean Git source was archived, all release files hashed, and the snapshot made
+read-only. The working checkout remains editable without changing the running
+release. No production launcher, Docker container, data location or VPN route was
+changed. The private pilot alone was handed from its temporary supervisor to
+`org.hereiam.native-pilot`, registered for the current login only.
+
+The backend installation used 120 pinned wheels, downloaded from official PyPI,
+then installed offline with required SHA-256 hashes and no dependency resolution.
+`pip check` passed. The hash lock is committed; private runtime installation
+evidence and artifacts remain local. Homebrew Python 3.11.14, FFmpeg, the existing
+MLX voice runtime and cached voice-model snapshot are still external dependencies,
+not a fully self-contained or independently rebuilt distribution.
+
+End-to-end acceptance against the copied real library:
+
+| Check | Observed result |
+|---|---|
+| First managed startup | Ready in 26.19 seconds after launch request |
+| Duplicate start | Refused on occupied pilot port; existing pilot untouched |
+| Forced backend crash | Automatically recovered in 9.08 seconds |
+| Forced supervisor crash | Automatically recovered in 25.17 seconds |
+| Unresponsive backend | Health watchdog and supervisor recovered in 64.81 seconds |
+| Orderly stop/start | Job unloaded and listeners stopped; restart ready in 8.07 seconds |
+| Orphan cleanup | Previous child processes gone after each recovery test |
+| HTTPS mobile WebKit | Separate login cookie; one-click complete sample playback; answer retained; recording screen available |
+| Post-recovery library | 73 memories, including the pending 14.036-second phone recording; authenticated audio checksum identical |
+| Source integrity | Running read-only release still matches every manifest hash |
+| Original data | 573 production files unchanged; production and pilot retain 208 vectors each |
+| Production isolation | Normal application healthy; both existing HTTPS route mappings unchanged |
+
+These are single-run local recovery observations, not uptime promises. The
+watchdog deliberately tolerates three failed probes before restarting a process;
+an unresponsive request therefore takes longer to recover than a process exit.
+No inference or embedding was run during crash tests. The local voice model was
+idle/unloaded; these checks do not measure voice synthesis speed or recovery of
+in-flight inference. The original recording, private passphrase and bridge token
+remained unchanged. Login sessions created by browser checks are expected.
+
+Missing/partial data-volume paths are covered by fail-closed tests: launch is
+refused before runtime invocation and no empty replacement storage is created.
+Operator stop remains available when configured data/runtime paths are missing.
+The actual external drive was not unmounted, and logout/reboot was not tested.
+There is no new login item and no automatic startup after reboot.
+
+Final backend regression: **218 passed**, 14 upstream deprecation warnings. An
+initial restricted-sandbox run passed 217 tests but could not bind a local test
+socket; the complete rerun with loopback permission passed all 218. Ruff and
+whitespace checks passed. Full desktop/mobile WebKit regression: **37 passed,
+5 skipped** (mobile-only cases intentionally skipped in the desktop project).
+Browser verification traced authentication, saved bytes, playback and rendered
+state rather than treating health alone as acceptance. No new physical iPhone
+test was claimed; the earlier user-confirmed physical results still stand.
+
+Private recovery evidence is under ignored
+`reports/private/managed-service-20261027/`. The iPhone pilot is left running at
+the same private port-8443 address with its existing temporary passphrase. The
+new recording remains safely queued in the pilot and has not been transcribed or
+embedded. Logs currently append; bounded log retention is another production
+packaging follow-up. All backups, restore copies and Chroma records are retained.
+
 ### Production cutover plan — not authorized or executed
 
 The managed service work remains a candidate pilot. The pilot launcher still

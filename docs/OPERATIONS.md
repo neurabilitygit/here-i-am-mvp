@@ -248,6 +248,15 @@ This is recovery from software faults, not protection against a sleeping/unplugg
 Mac, a failed external disk, or a network outage. Current-login launchd registration
 does not survive logout/reboot; login-start behavior requires separate approval.
 
+The managed pilot was verified on 2026-10-27 using immutable release `442ff70`:
+backend crash, supervisor crash, unresponsive backend, and normal stop/start all
+recovered without orphan child processes or changed stored data. Full evidence
+and limitations are recorded in `PENDING_HARDENING_REVIEW.md`. Missing-volume
+behavior is unit-tested, not an actual drive-unplug test. The private pilot remains
+deliberately limited; its queued phone recording is not processed by this launcher.
+Logs currently append without automated retention. Do not interpret this pilot
+registration as a production installation or reboot-start configuration.
+
 ### Local workload controls (candidate, not deployed)
 
 The candidate admits only one heavyweight app-owned local operation at a time:
@@ -307,7 +316,12 @@ repair SQLite/Chroma behavior at the Docker/ExFAT filesystem boundary.
 - Never copy a Chroma directory while it is being written. Prefer a stopped-app volume snapshot or rebuild from portable artifacts.
 - Verify a backup without changing data using `python scripts/restore_backup.py <backup> <empty-target>`. Add `--confirm-empty-target` only when restoring into a genuinely empty directory. Restore never overwrites or deletes existing data.
 
-## Deployment gate
+## Legacy Docker deployment gate
+
+The checks below apply to the existing Docker deployment path only. They are not
+authorization for a native cutover. For the candidate native architecture, follow
+the staged production cutover plan in `PENDING_HARDENING_REVIEW.md`; keep production
+unchanged until those separate compatibility and approval gates are complete.
 
 Before replacing the existing container: run the test target, launch an isolated container with a synthetic empty data volume on another port, verify the UI and API, create a volume snapshot, and only then schedule a controlled cutover. Do not combine collection activation with the application rollout.
 

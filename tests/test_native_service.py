@@ -93,3 +93,36 @@ def test_health_probe_does_not_treat_bad_body_as_ready():
     class Client:
         def get(self,*args,**kwargs): return BadResponse()
     assert supervisor.service_health(Client()) is False
+
+
+@pytest.mark.parametrize('partial',[False,True])
+def test_missing_data_volume_fails_before_launch_and_creates_nothing(tmp_path,monkeypatch,partial):
+    service=module('native_service')
+    root=tmp_path/'unavailable-volume'/'pilot'
+    if partial:
+        (root/'library/sessions').mkdir(parents=True)
+    profile=tmp_path/'profile.json'
+    profile.write_text(json.dumps({'schema':1,'label':service.LABEL,'login_autostart':False,
+                                   'data_root':str(root),'state_dir':str(tmp_path/'state')}))
+    profile.chmod(0o600)
+    def unexpected(*args,**kwargs):
+        pytest.fail('Unavailable data must not launch or verify a runtime')
+    monkeypatch.setattr(service.subprocess,'run',unexpected)
+    monkeypatch.setattr(sys,'argv',['native_service.py','start','--profile',str(profile)])
+    with pytest.raises(ValueError,match='existing restored pilot library'):
+        service.main()
+    assert not (root/'appdata').exists()
+    assert not (tmp_path/'state').exists()
+    assert root.exists() is partial
+
+
+def test_operator_stop_does_not_require_available_data_or_runtime(tmp_path,monkeypatch):
+    service=module('native_service')
+    profile=tmp_path/'profile.json'
+    profile.write_text(json.dumps({'data_root':'/missing-volume','backend_python':'/missing-runtime'}))
+    profile.chmod(0o600)
+    calls=[]
+    monkeypatch.setattr(service.subprocess,'run',lambda *args,**kwargs:calls.append((args,kwargs)))
+    monkeypatch.setattr(sys,'argv',['native_service.py','stop','--profile',str(profile)])
+    service.main()
+    assert calls==[((['/bin/launchctl','bootout',f'gui/{os.getuid()}/org.hereiam.native-pilot'],),{'check':True})]
