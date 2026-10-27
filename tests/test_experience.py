@@ -82,6 +82,24 @@ def test_lexical_personal_context_prefers_speakers_relationship(tmp_path, monkey
     assert distances[0] < 0
 
 
+def test_direct_evidence_keeps_inflected_action_and_requested_date():
+    evidence = direct_evidence_text(
+        'When did I move to Maple Valley?',
+        ['My parents sold their house in Maple Valley. I moved in 1982 before starting ninth grade. '
+         'My brother bought a car in 1998. We spent time in Maple Valley with friends.'],
+    )
+    assert evidence.splitlines()[0] == '- I moved in 1982 before starting ninth grade.'
+    assert '1998' not in evidence
+
+
+def test_direct_evidence_prioritizes_requested_school_grade():
+    evidence = direct_evidence_text(
+        'What grade was I about to enter when I moved to Maple Valley?',
+        ['We lived in Maple Valley for years. I moved in 1982 before starting ninth grade.'],
+    )
+    assert evidence.splitlines()[0] == '- I moved in 1982 before starting ninth grade.'
+
+
 def test_evidence_gate_accepts_direct_fact_and_rejects_unrelated_results():
     assert personal_evidence_is_sufficient(
         'Are you married?',

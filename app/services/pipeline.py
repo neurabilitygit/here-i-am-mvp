@@ -1381,6 +1381,8 @@ def personal_retrieval_plan(question: str) -> tuple[str, set[str], set[str]]:
 
 def direct_evidence_text(question: str, docs: list[str], limit: int = 5) -> str:
     _query, concept_terms, concept_phrases = personal_retrieval_plan(question)
+    asks_when = bool(re.search(r'\b(?:when|what year|which year)\b', question.lower()))
+    asks_grade = bool(re.search(r'\bgrade\b', question.lower()))
     candidates: list[tuple[float, int, str]] = []
     seen: set[str] = set()
     for doc_index, doc in enumerate(docs):
@@ -1390,7 +1392,16 @@ def direct_evidence_text(question: str, docs: list[str], limit: int = 5) -> str:
             if len(normalized) < 12 or normalized in seen:
                 continue
             phrase_hits = sum(1 for phrase in concept_phrases if phrase in normalized)
-            term_hits = sum(1 for term in concept_terms if re.search(rf'\b{re.escape(term)}\b', normalized))
+            # Preserve ordinary verb inflections (move/moved/moving). Exact
+            # keyword matching previously dropped the sentence containing a
+            # date while promoting surrounding sentences naming the place.
+            term_hits = 0
+            for term in concept_terms:
+                variants = {term, term + 's', term + 'ed', term + 'ing'}
+                if term.endswith('e'):
+                    variants.update({term + 'd', term[:-1] + 'ing'})
+                if any(re.search(rf'\b{re.escape(value)}\b', normalized) for value in variants):
+                    term_hits += 1
             # For known biographical concepts, exact first-person phrases are
             # materially safer than a bare keyword. A sentence about "his wife"
             # or a friend's marriage is related, but it does not answer the
@@ -1400,7 +1411,12 @@ def direct_evidence_text(question: str, docs: list[str], limit: int = 5) -> str:
             if not concept_phrases and not term_hits:
                 continue
             first_person = 1 if re.search(r"\b(?:i|i'm|i've|my|we|our)\b", normalized) else 0
-            score = phrase_hits * 5 + term_hits + first_person * 1.5 - doc_index * 0.05
+            # Rank an explicit answer to the requested fact above surrounding
+            # narrative, without another model call or changing any vectors.
+            answer_slot = 4 if asks_when and re.search(r'\b(?:1[6-9]|20)\d{2}\b', normalized) else 0
+            if asks_grade and re.search(r'\bgrade\b', normalized):
+                answer_slot += 4
+            score = phrase_hits * 5 + term_hits + first_person * 1.5 + answer_slot - doc_index * 0.05
             candidates.append((score, doc_index, sentence[:600]))
             seen.add(normalized)
     candidates.sort(key=lambda item: (-item[0], item[1]))
