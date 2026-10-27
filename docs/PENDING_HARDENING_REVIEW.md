@@ -158,3 +158,45 @@ failed external Chroma acceptance gate. Native GPU memory release, physical
 iPhone behavior, real-corpus answer quality, and end-to-end latency have not been
 validated for this increment. Production source reconciliation still matched all
 23 scoped active files at operational commit `3cc3869`; nothing was deployed.
+
+### Native synthetic storage pilot (2026-10-26)
+
+The follow-up pilot used a separate temporary native Python environment, not
+the installed application/voice environments. It ran the candidate's existing
+tests with `TMPDIR` pointing to the synthetic external-drive validation folder.
+No production library was copied or opened by this pilot. Inference endpoints
+were disabled by the test harness; no models or real recordings were processed.
+
+- Native storage, restore-safety, cross-process coordination, and full synthetic
+  Chroma backup/restore: **18 passed**, 13 upstream Pydantic deprecation warnings,
+  7.56 seconds.
+- A second full synthetic backup/restore in a fresh database: **1 passed**,
+  13 warnings, 1.82 seconds.
+- A new Python process reopened the first restored collection and retrieved the
+  retained archived synthetic document by explicit vector query, with count 1
+  and distance 0.0. Original synthetic source count/content remained intact in
+  the backup test. No collection/record deletion was performed.
+- Dependency consistency check passed. Chroma logged a PostHog API-signature
+  mismatch despite telemetry being disabled; it did not prevent the query.
+
+Runtime: macOS 27.0.1 arm64, Python 3.11.14, Chroma 0.5.23,
+chroma-hnswlib 0.7.6, NumPy 2.4.6, Pydantic 2.11.3, PostHog 7.75.11.
+Top-level dependencies used the repository pins; transitive dependencies are
+not fully locked, so this is not a platform-only controlled comparison with
+Docker. Resolve/pin a tested dependency set before a production native rollout.
+
+Retained synthetic restored roots are under
+`/Volumes/Personal/here-i-am-validation.aXczUx/`:
+`here-i-am-empty-restore-obvq1dsq` and `here-i-am-empty-restore-iqtv2prw`.
+The isolated runtime is `/private/tmp/here-i-am-native-pilot-20261026` and is
+temporary, not a production installation.
+
+This clears the *native synthetic restore* check, not the Docker storage gate
+or production acceptance. Next: create/verify a consistent application-level
+backup, restore it into a separate native pilot data root on the same ExFAT
+volume, compare all collection counts and representative retrieval results,
+then exercise the pilot server on a separate loopback port. Never copy a live
+SQLite database as the backup method. Keep all original Chroma records and the
+current deployment intact; do not convert the filesystem. Physical iPhone,
+concurrent operations, failure recovery, and real-library performance still
+require acceptance testing before any deliberate cutover.
