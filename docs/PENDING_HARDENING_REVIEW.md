@@ -264,3 +264,60 @@ recording, then a reversible cutover/rollback rehearsal. Preserve current
 storage locations and all Chroma records. Retrieval improvements, ASR/voice
 benchmarks, speaker processing, and answer-model evaluation remain separate
 roadmap work; this pilot does not complete those stages.
+
+### Native launcher and authenticated write acceptance (2026-10-27)
+
+Added `scripts/native_pilot.py`, a separate opt-in foreground launcher. It never
+replaces the production/desktop launcher. It validates a path-bound pilot marker,
+rejects known production roots/ancestors and symlink escapes, requires a separate
+0700 state directory and 0600 independent passphrase hash, strips inherited
+environment settings, and constructs explicit copied-library paths. It listens
+only on loopback port 8792 by default. Cloud/voice/Ollama services are disabled;
+only authentication, activity, upload and recording-validation-retry mutations
+are permitted. Missing or invalid authentication at runtime returns HTTP 503,
+rather than falling back to the app's unconfigured development authentication.
+
+The 120-distribution native version lock was successfully installed into a fresh
+Python 3.11.14 arm64 environment with `--no-deps`; `pip check` passed. Startup
+checks versions against this lock. This reproduces package versions, not binary
+artifact hashes or system FFmpeg builds; those remain release work. FFmpeg and
+ffprobe 8.0.1 were used. Chroma/PostHog and upstream deprecation warnings remain.
+
+The first acceptance run passed upload, draft recovery, and fail-closed auth,
+then caught an immediate-restart problem in the launcher's port probe: TCP
+TIME_WAIT was mistaken for an active listener. The probe now uses SO_REUSEADDR
+like uvicorn; a regression test still verifies rejection of a real listener.
+The first test copy and synthetic recordings were retained. A fresh restore
+was used for the second run, which passed the complete sequence:
+
+- Unauthenticated reads and wrong-password login: 401; correct login: 200.
+- Cross-origin changes and disabled pilot operations: 403.
+- Real native upload of a synthetic WAV: source bytes/checksum preserved,
+  FFmpeg produced FLAC, recording entered the pending queue.
+- Simulated validation interruption on that new fixture: retry rebuilt FLAC
+  from the retained source and returned ready. No real recording was edited.
+- Automated WebKit: login dialog→Talk; failed upload→IndexedDB recovery after
+  reload→real successful upload; browser draft removed only after acknowledgement.
+  No page errors. This is simulated capture, not a physical microphone test.
+- Temporarily missing pilot passphrase file: 503; restored private hash resumes
+  normal operation. Restart preserved authentication and both synthetic recordings.
+- Logout revoked the session; subsequent protected access returned 401.
+
+Final checks: **180 backend tests passed**, 14 upstream deprecation warnings;
+Ruff, JavaScript syntax, and whitespace checks passed. Both original and pilot
+Chroma still contained 208 vector rows. All 573 original files matched the earlier
+snapshot checksums. Production health remained OK; the temporary server stopped
+and port 8792 was closed. No source audio or Chroma records were deleted.
+
+Private evidence is in ignored `reports/private/native-pilot-20261027-second/`
+(acceptance report/server log/test credentials). The accepted copied library is
+`/Volumes/Personal/here-i-am-validation.aXczUx/real-pilot-20261027/launcher-acceptance2/`.
+It includes two retained synthetic test recordings in addition to the 72 real
+session copies. The test passphrase was random and not logged; do not treat this
+automated instance as a human-operated deployment.
+
+Next gate: isolated cloned-voice integration and physical iPhone recording/playback,
+then production service management, full backup/rollback rehearsal and deliberate
+cutover approval. The current launcher intentionally blocks inference and VPN
+exposure; it is not a production-ready replacement or a claim of completed
+voice, latency, or all eight roadmap stages.

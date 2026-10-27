@@ -68,6 +68,55 @@ Before local synthesis, the app unloads configured chat/analysis models only whe
 
 ## Recovery
 
+### Isolated native storage pilot (candidate, not deployed)
+
+For the isolated native storage pilot (not a production replacement), use
+`scripts/native_pilot.py`. The production launcher and desktop script remain
+unchanged. The pilot never starts Docker, Tailscale, Ollama, or voice bridges.
+It requires a restored copy with a marker bound to its resolved path, a separate
+private state directory, and its own passphrase. It refuses the known production
+data path, descendants/ancestors, symlink escapes, mismatched markers, unsafe
+authentication files, occupied ports, and an unvalidated runtime.
+
+Native pilot setup, from the repository root:
+
+```sh
+# Python must be the tested macOS arm64 3.11.14 build.
+python3.11 -m venv /private/tmp/here-i-am-native-pilot
+/private/tmp/here-i-am-native-pilot/bin/pip install --no-deps -r requirements-native-macos-arm64-py311.lock
+/private/tmp/here-i-am-native-pilot/bin/pip check
+# Replace these two paths with a verified restored copy and a NEW private
+# directory on the Mac. Never point DATA at the production library.
+DATA='/absolute/path/to/isolated/restored-copy'
+STATE='/absolute/path/to/new-private-pilot-state'
+/private/tmp/here-i-am-native-pilot/bin/python scripts/native_pilot.py init --data-root "$DATA" --state-dir "$STATE" --confirm-isolated-copy
+/private/tmp/here-i-am-native-pilot/bin/python scripts/native_pilot.py check --data-root "$DATA" --state-dir "$STATE"
+/private/tmp/here-i-am-native-pilot/bin/python scripts/native_pilot.py run --data-root "$DATA" --state-dir "$STATE"
+```
+
+Open `http://127.0.0.1:8792` in Safari; stop with Ctrl-C. It binds only loopback,
+ignores shell/cloud credentials and `.env`, and disables inference. The pilot
+allows only login/logout, activity logging, recording upload, and recording
+validation retry mutations. Other mutations are rejected. It is intentionally
+not usable for Talk inference, voice generation, embedding, or iPhone access.
+Authentication fails closed if its private hash disappears while running.
+
+The native lock pins 120 installed distribution versions, including test tools;
+it does not pin wheel hashes or system libraries. The tested audio utilities are
+Homebrew FFmpeg/ffprobe 8.0.1. The launcher verifies dependency versions and utility
+presence, not the utility build hashes. Native distribution packaging, security
+review, and artifact-hash pinning remain release work. Do not use a temporary
+environment as an unattended production service.
+
+`scripts/check_native_pilot.py --data-root "$DATA" --state-dir "$STATE"
+--confirm-pilot-mutations` is an explicit acceptance runner for a fresh,
+uninitialized pilot copy. It creates an unlogged random test passphrase, launches
+its own server, uses Node/Playwright WebKit, adds two synthetic recordings, tests
+recovery/restart, and stops its server. It retains recordings and private logs;
+it never deletes Chroma. It is not a physical microphone/iPhone test. State and
+credentials from this automated run are test-only; use a separately restored
+copy and the interactive `init` command for a human-operated pilot.
+
 ### Local workload controls (candidate, not deployed)
 
 The candidate admits only one heavyweight app-owned local operation at a time:
