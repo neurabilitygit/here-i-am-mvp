@@ -44,6 +44,13 @@ def label(p): return 'org.hereiam.native-'+p['kind']
 def target(p): return f'gui/{os.getuid()}/{label(p)}'
 
 
+def ports_available(p):
+    try:
+        for port in PORTS[p['kind']]: check_port(port)
+        return True
+    except OSError: return False
+
+
 def validate_storage(p):
     root=Path(p['data_root']).resolve(); state=Path(p['state_dir']).resolve()
     if p['kind']=='production' and root!=PRODUCTION.resolve():
@@ -230,7 +237,14 @@ def main():
     if args.command=='supervise': return supervise(p,args.profile)
     if args.command=='stop':
         subprocess.run(['/bin/launchctl','bootout',target(p)],check=True)
-        print('Native service stopped; stored data and routes retained.'); return
+        # bootout acknowledges the request before children have necessarily
+        # exited. Wait for both ownership and listeners before reporting stop.
+        for _ in range(50):
+            loaded=subprocess.run(['/bin/launchctl','print',target(p)],capture_output=True)
+            if loaded.returncode!=0 and ports_available(p):
+                print('Native service stopped; stored data and routes retained.'); return
+            time.sleep(1)
+        raise RuntimeError('Native service is still stopping; inspect status before restarting')
     if args.command=='status':
         result=subprocess.run(['/bin/launchctl','print',target(p)],capture_output=True,text=True)
         print(result.stdout if result.returncode==0 else 'Native service is not loaded.'); return
@@ -238,6 +252,8 @@ def main():
     if args.command=='check': print('Native source, runtime, authentication and storage verified.'); return
     loaded=subprocess.run(['/bin/launchctl','print',target(p)],capture_output=True)
     if loaded.returncode==0:
+        if str(args.profile).encode() not in loaded.stdout or p['source_root'].encode() not in loaded.stdout:
+            raise RuntimeError('Another native release is still loaded or stopping; wait for its confirmed stop')
         print('Native service is already loaded. Check readiness before use.'); return
     for port in PORTS[p['kind']]: check_port(port)
     plist=args.profile.with_suffix('.plist')

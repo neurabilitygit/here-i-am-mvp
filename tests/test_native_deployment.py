@@ -94,3 +94,19 @@ def test_duplicate_native_supervisor_refused(tmp_path):
     with m.owner_lock(tmp_path):
         with pytest.raises(RuntimeError,match='already supervised'):
             with m.owner_lock(tmp_path): pass
+
+
+def test_stop_waits_for_job_and_listeners_without_reading_data(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    m=module(); p={'schema':1,'kind':'staging','settings':{}}
+    path=tmp_path/'profile.json'; path.write_text(json.dumps(p)); path.chmod(0o600)
+    calls=[]; prints=iter([0,1,1]); ports=iter([False,True])
+    def run(args,**kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=next(prints) if 'print' in args else 0)
+    monkeypatch.setattr(m.subprocess,'run',run)
+    monkeypatch.setattr(m,'ports_available',lambda _p:next(ports))
+    monkeypatch.setattr(m.time,'sleep',lambda _n:None)
+    monkeypatch.setattr(sys,'argv',['native_deployment.py','stop','--profile',str(path)])
+    m.main()
+    assert sum('print' in call for call in calls)==3
