@@ -438,3 +438,61 @@ root. Backups and failed/complete restore copies are retained. Source code,
 dependency artifacts, operating-system setup and downloaded models still need
 a production recovery/packaging procedure. The next gate is native service
 packaging and a reviewed production cutover/rollback plan, not automatic migration.
+
+### Production cutover plan — not authorized or executed
+
+The managed service work remains a candidate pilot. The pilot launcher still
+rejects production paths and blocks Talk inference, embedding and maintenance.
+Successful pilot recovery is not proof of production workflow compatibility.
+Do not remove those guards just to make a production launcher.
+
+Sequential gates before a deliberate switch:
+
+1. **Package and supervise the candidate.** Use a durable independent runtime,
+   artifact-pinned wheels and a read-only committed source release. Validate
+   normal start/stop, duplicate-start refusal, child and supervisor crash recovery,
+   data-volume absence, restored authentication and no orphan listeners. Keep
+   production 443→8787 and the original desktop launcher unchanged. Pilot-only
+   current-login operation can proceed; unattended login startup is a separate
+   deployment decision.
+2. **Complete the production-equivalent configuration on another copy.** Model
+   local answer/embedding/voice and optional explicitly selected cloud answers as
+   separate capabilities. Preserve no-automatic-fallback policy. Validate every
+   storage/lock/credential path, token permissions, host/origin and local bridge
+   identity. Add no cloud keys to source, profiles, logs or command arguments.
+   Do not enable recording processing on the currently preserved pilot casually.
+3. **Run full workflow acceptance.** Authenticated Safari/iPhone recording upload
+   and draft recovery, queued local transcription/embedding, append-only vector
+   versioning, four reviewed memoir retrieval cases, answer grounding/abstention,
+   correct provider labeling, complete cloned WAV playback, cancellation/resume,
+   and simultaneous-workload/memory behavior. Test the larger backlog and restart
+   recovery. Current service/restore checks do not replace these tests.
+4. **Rehearse old-to-new and new-to-old compatibility.** Test the actual deployed
+   source revision, not just the candidate restarted against itself. Introduce
+   synthetic post-cutover writes on a copy, then verify they remain recoverable
+   when rolling back. Never roll back by overwriting newer recordings or deleting
+   vectors. If the older app cannot read newer state, use a reviewed export/replay
+   path or forward repair before permitting production writes.
+5. **Freeze and protect production for the change window.** Obtain explicit
+   approval and announce a brief pause. Drain active recordings/jobs and persist
+   browser drafts. Make fresh encrypted, second-volume logical and runtime/source
+   recovery artifacts; verify restore and all Chroma collections. Capture exact
+   old image/source, ports, routes, credentials and service ownership. Stop only
+   verified owned processes. Keep the current ExFAT storage layout; do not convert
+   filesystems or run native and Docker writers concurrently on the same data.
+6. **Switch with rollback boundaries.** Start the approved production-capable
+   release only after its staged gates pass. Check loopback readiness, auth and
+   data before changing the normal HTTPS route. A health endpoint alone is not
+   success. Run agreed smoke tests. On failure, freeze new writes, preserve all
+   post-switch data, and use the tested compatibility procedure. Do not point an
+   old container at a database it has not been proven able to read.
+7. **Observe, then retire nothing automatically.** Review activity/errors,
+   pending jobs, recording integrity, vector counts and memory pressure. Keep old
+   releases and backups until the user approves retention changes. No Chroma
+   deletion, raw SQLite overwrite, APFS migration, or automatic provider change.
+
+Remaining packaging limitations: the backend still depends on the installed
+Homebrew Python/FFmpeg binaries; the voice runtime and model have not received a
+fresh artifact-pinned rebuild; launchd current-login recovery is not login/reboot
+validation; backup copies are not off-site. None should be implied complete by
+passing the native pilot tests.

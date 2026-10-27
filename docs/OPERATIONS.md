@@ -205,6 +205,49 @@ Finder flags or extended attributes; those are outside the logical manifest and
 can fail with `EINVAL` when restoring from the Mac to ExFAT. Permission, disk-full,
 copy and integrity errors are still raised, not silently ignored.
 
+#### Managed native pilot (current login only)
+
+`scripts/native_service.py` packages a clean committed source snapshot and manages
+only the fixed `org.hereiam.native-pilot` user service. It does not install a login
+item, move data, change VPN routes, start Docker/Ollama, or switch production.
+The service definition stays in its private bundle directory, not LaunchAgents.
+`launchctl bootstrap gui/<uid>` loads it for the current login; `bootout` stops it.
+This follows [Apple's launchd service-management model](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html).
+
+Prepare a durable Python 3.11.14 arm64 virtual environment separately from the
+existing production and voice runtimes. `requirements-native-macos-arm64-py311.hashes.lock`
+pins the 120 selected wheel artifacts by SHA-256. Download the matching wheelhouse
+once, then install with `--no-index --find-links <wheelhouse> --no-deps --require-hashes`
+and run `pip check`. These wheel hashes do not pin Python, macOS, FFmpeg, the
+separate MLX voice runtime, or model weights; retain/version those separately.
+
+Use `prepare --profile <new-private-profile.json>` with `--bundle-root`,
+`--data-root`, `--state-dir`, `--backend-python`, `--voice-python`, `--model-path`
+and the exact `--pilot-origin` on port 8443. Data/state must already pass pilot
+validation. The bundle must be outside production, data/state and the checkout.
+Preparation refuses a dirty checkout, existing profile/definition, source links,
+unverified source contents, a temporary backend runtime, or dependency mismatch.
+It archives the Git commit, adds a complete file-hash manifest, and makes the
+release tree read-only. It does not copy untracked recordings, credentials or `.env`.
+
+After stopping the known old pilot supervisor, `start --profile <profile>` checks
+integrity and free pilot ports before loading the service. It never kills a port
+owner. `check`, `status`, and `stop` accept the same profile. Stop remains usable
+if the data volume/runtime is unavailable. Stop/start do not remove files or VPN
+routes. A successful request to start is not readiness: confirm the app and bridge
+health and the expected source in the private `service-status.json`.
+
+The supervisor has a per-pilot kernel lock, private atomic status snapshots,
+child-exit detection, and 15-second health checks. Three consecutive unhealthy
+checks fail the supervisor; launchd restarts failed exits with a 30-second throttle.
+Normal operator stop does not trigger recovery. launchd is configured to clean
+up the job's process group rather than leave orphan listeners. These health checks
+do not load models or perform synthesis. Crash recovery can interrupt an in-flight
+request; recording drafts and completed voice segments remain the recovery source.
+This is recovery from software faults, not protection against a sleeping/unplugged
+Mac, a failed external disk, or a network outage. Current-login launchd registration
+does not survive logout/reboot; login-start behavior requires separate approval.
+
 ### Local workload controls (candidate, not deployed)
 
 The candidate admits only one heavyweight app-owned local operation at a time:
