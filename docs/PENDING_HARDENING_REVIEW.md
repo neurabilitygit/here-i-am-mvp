@@ -200,3 +200,67 @@ SQLite database as the backup method. Keep all original Chroma records and the
 current deployment intact; do not convert the filesystem. Physical iPhone,
 concurrent operations, failure recovery, and real-library performance still
 require acceptance testing before any deliberate cutover.
+
+### Real-library native preservation pilot (2026-10-27)
+
+Production stayed online and unchanged. No background jobs were active at
+preflight. The deployed older backup exporter handles only the default Chroma
+collection, so this pilot instead made an isolated preservation snapshot using
+a read-only SQLite connection and SQLite's online backup API. It did not raw-copy
+the live SQLite database. Source file inventories/checksums and SQLite
+`data_version` were checked across copying; a change would reject the snapshot.
+Chroma itself was opened only on the isolated copies, never on original data.
+
+The snapshot copied and verified 573 files (727,937,969 bytes), including library,
+speaker/profile, voice assets, and Chroma index files. Runtime logs/jobs/locks,
+temporary files, model caches, exports, existing backups, auth tokens, and the
+generation audit were excluded. This is a pilot preservation snapshot, not a
+complete disaster-recovery backup. It is on the same drive as the originals.
+
+The candidate's all-collection logical exporter then produced a verified backup
+from that isolated snapshot. Restore into a new, empty native data root passed:
+
+- 569 restored non-vector-export files matched the backup's size and SHA-256.
+- All 208 records in `here_i_am_chunks` matched exactly across IDs, documents,
+  metadata, and floating-point embeddings. Collection metadata also matched.
+- Six stored-vector probes from the two approved sample sessions returned
+  identical neighbor IDs and distances before/after restore.
+- The restored library contained 72 session folders and no archived folders.
+- Four user-confirmed retrieval cases each found the expected recording in both
+  runs. The source was ranked first for three cases and second for one. This is
+  a tiny retrieval set, not an answer-quality or hallucination benchmark.
+- First retrieval took 2.204 seconds, including 1.960 seconds of embedding-model
+  load time. Subsequent lookups took 0.128–0.271 seconds. The second-run median
+  was approximately 0.144 seconds. No LLM answers or cloned speech were generated.
+  This is not a controlled production-Docker/native speed comparison.
+
+Following the verification skill's UI→API→data→render check, a temporary
+read-only native server on `127.0.0.1:8792` served the real restored library.
+Automated WebKit verified home and session API HTTP 200, the Memories view,
+and a displayed count of 72; there were no page errors or unexpected HTTP
+failures. An explicit pilot guard rejected writes with HTTP 403. Inference was
+disabled for this browser check, and the pilot was not exposed through Tailscale.
+This was not a physical Safari/iPhone, microphone, or playback test.
+
+The pilot server was stopped afterward; port 8792 was closed. Production health
+remained OK on port 8787. Ollama had no loaded models before the retrieval test
+and was returned to that state afterward. No Chroma deletion calls were used.
+Final source verification again matched all 573 original files to the pre-copy
+checksums; pilot processing did not alter those files.
+The unrelated Chroma/PostHog telemetry signature warnings remain a dependency
+compatibility item; no memoir text was sent to any cloud inference provider.
+
+Private evidence and retained copies live at
+`/Volumes/Personal/here-i-am-validation.aXczUx/real-pilot-20261027/`:
+`snapshot-verification.json`, `logical-backup-result.json`,
+`restore-verification.json`, `retrieval-pilot.json`, `ui-verification.json`,
+`snapshot/`, and `restored/`. Private memoir content is not committed to Git.
+
+Recommendation: proceed toward a native-backend option, but do not cut over yet.
+Next acceptance work is a reproducible locked native runtime and launcher,
+path/secret isolation and production authentication, write/upload/recovery tests
+on the copied library, voice-bridge integration, physical iPhone playback and
+recording, then a reversible cutover/rollback rehearsal. Preserve current
+storage locations and all Chroma records. Retrieval improvements, ASR/voice
+benchmarks, speaker processing, and answer-model evaluation remain separate
+roadmap work; this pilot does not complete those stages.
