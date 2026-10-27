@@ -3,12 +3,23 @@
 ## Startup checks
 
 1. Confirm `/Volumes/Personal/here-i-am` is mounted.
-2. Confirm native Ollama responds at `http://127.0.0.1:11434/api/tags`.
-3. Run `scripts/start.sh`, which starts/reconnects Tailscale, creates a clean build snapshot under `/tmp`, starts the application, and publishes its authenticated loopback listener to the private tailnet.
+2. Confirm the private native profile exists at `/Users/ericbass/Library/Application Support/Here-I-Am/native-production/production.json`.
+3. Run `scripts/start.sh` or the desktop launcher. With that profile present, it verifies the immutable release/runtime/storage, starts or reconnects Tailscale, starts the managed native app/voice/control service group, and publishes its authenticated loopback listener to the private tailnet. It reuses a running Ollama server or starts one if needed. Docker is not required.
 4. Check `/api/health` for application/storage liveness and `/api/ready` for Ollama readiness.
-5. The production launcher starts the cloned-voice and Ollama-control bridges in detached native process sessions; check `http://127.0.0.1:8779/health` and `http://127.0.0.1:8778/ollama/status`.
+5. Check `http://127.0.0.1:8779/health` and `http://127.0.0.1:8778/status`, or run `scripts/status.sh`. Use `scripts/stop.sh` to stop the managed app and its owned children. A reused shared Ollama server and Tailscale are not stopped.
 
-For the current Railway-backed OpenAI benchmark, the desktop launcher reads `OPENAI_API_KEY` from the linked Rising Senior Railway service, writes it to a mode-600 host secret, and mounts that file read-only at `/run/secrets/openai_api_key`. The value is not placed in Compose, preferences, logs, or source control. Here I Am defaults to the lower-cost `gpt-5.4-mini`; the Railway service's own model selection is not changed.
+The production service is managed for the current login, not installed as a new
+login item. Run the desktop launcher after restarting the Mac. The production
+profile references source release `0c2e31a6e9a880858e3635f38fbef341c9df916c`;
+editing a checkout does not update this release. Stop and verify the old service
+has exited before activating another reviewed profile. See
+[the cutover and recovery record](NATIVE_MIGRATION_2026-10-27.md).
+
+The existing Railway-sourced OpenAI credential is retained in the protected
+mode-600 host secret. Native production reads that file directly; the launcher
+does not fetch cloud secrets on ordinary restarts. Secret values are never
+placed in the profile, preferences, logs, or source control. The user's existing
+Local Gemma selection and saved OpenAI model preference were preserved.
 
 ## Remote access via Tailscale
 
@@ -16,7 +27,7 @@ Here I Am can be reached from a phone without exposing any port to the LAN or th
 
 1. Install Tailscale on this Mac and on the phone, and sign both into the same tailnet once.
 2. Set the shared login passphrase once: `./scripts/set_passphrase.py`. This writes a PBKDF2 hash (never the plaintext) to a mode-600 file under the same secret directory as `local_bridge_token`; `scripts/start.sh` refuses to start without it.
-3. Run `./scripts/start.sh` as usual. The launcher opens the Tailscale app if needed, reconnects without changing the device's existing tailnet configuration, discovers its MagicDNS hostname, adds the matching HTTPS origin and trusted host to the container environment, and runs `tailscale serve` after the application is ready. Docker remains bound to `127.0.0.1:8787`; only Tailscale's private host proxy can reach it remotely.
+3. Run `./scripts/start.sh` as usual. The launcher opens Tailscale if needed and reconnects without changing the device's existing tailnet preferences. The native profile retains the approved HTTPS origin and trusted host. The application binds to `127.0.0.1:8787`; Tailscale Serve forwards the normal private HTTPS address to it. The separate port-8443 pilot route has been retired.
 4. Open the HTTPS URL printed by the launcher on the iPhone while its Tailscale connection is active, then log in with the passphrase from step 2. The session cookie is `HttpOnly`, `Secure`, and expires after `AUTH_TOKEN_TTL_SECONDS` (default 30 days).
 
 For deliberate local-only maintenance, run `HERE_I_AM_ENABLE_TAILSCALE=false ./scripts/start.sh`. Any other value fails closed. `./scripts/enable_tailscale.sh` remains available as a standalone repair command and now starts or reconnects Tailscale itself.
@@ -316,9 +327,9 @@ repair SQLite/Chroma behavior at the Docker/ExFAT filesystem boundary.
 - Never copy a Chroma directory while it is being written. Prefer a stopped-app volume snapshot or rebuild from portable artifacts.
 - Verify a backup without changing data using `python scripts/restore_backup.py <backup> <empty-target>`. Add `--confirm-empty-target` only when restoring into a genuinely empty directory. Restore never overwrites or deletes existing data.
 
-## Legacy Docker deployment gate
+## Historical Docker deployment gate
 
-The checks below apply to the existing Docker deployment path only. They are not
+The checks below apply to the retained Docker deployment path only. They are not
 authorization for a native cutover. For the candidate native architecture, follow
 the staged production cutover plan in `PENDING_HARDENING_REVIEW.md`; keep production
 unchanged until those separate compatibility and approval gates are complete.

@@ -1,5 +1,12 @@
 # Pending Phase 1–5 hardening
 
+**Current deployment update (2026-10-27):** the authorized Docker-to-native
+production cutover is complete. See [the migration record](NATIVE_MIGRATION_2026-10-27.md)
+for the deployed commit, real acceptance results, retained data and remaining
+limitations. The following dated candidate notes are historical evidence, not
+the current deployment state. The broader eight-stage performance program is
+not claimed complete.
+
 Recorded on 2026-10-26. This branch preserves earlier implementation work;
 it is not a deployment approval or an implementation of the new local-performance plan.
 

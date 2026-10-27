@@ -1,5 +1,10 @@
 # Non-destructive refactor migration
 
+The production runtime was moved from Docker to native macOS on 2026-10-27;
+see [the cutover record](NATIVE_MIGRATION_2026-10-27.md). Storage stayed on the
+existing external drive and the active vector collection was not changed.
+The earlier implementation notes below describe the original refactor.
+
 ## Implemented phases 1-6
 
 1. Characterization: isolated test target and API/storage/pipeline/job/library tests.
@@ -20,6 +25,6 @@ Existing session folders and `here_i_am_chunks` remain readable. No startup migr
 3. Explicitly start the side-by-side reindex and inspect job totals/errors.
 4. Compare representative retrieval results between collections.
 5. In a later approved change, switch the environment to `here_i_am_chunks_v2`.
-6. Retain the original collection until rollback criteria expire.
+6. Retain the original collection permanently. Never delete Chroma records.
 
 No migration or deployment against personal data was performed during implementation.
