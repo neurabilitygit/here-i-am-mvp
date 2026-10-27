@@ -290,6 +290,7 @@ Rules:
 - Each style_exemplars value should be a short quote-like excerpt or concise paraphrase representing the way the speaker talks.
 - Be faithful to the transcript. Do not invent facts.
 - When uncertain, be conservative.
+- Use empty strings or empty arrays for unknown values, not null.
 
 Session ID: {session_id}
 
@@ -312,7 +313,11 @@ def generate_metadata(session_id: str, transcript: str) -> dict:
                 )
             )
         material = "\n\n".join(f"Section {i}: {value}" for i, value in enumerate(summaries, start=1))
-    raw = ollama_client.generate_json(metadata_prompt(session_id, material))
+    # Generic JSON mode guarantees syntax, not the field types this pipeline
+    # consumes. Constrain the same single local generation to our real schema.
+    raw = ollama_client.generate_json(
+        metadata_prompt(session_id, material), schema=TranscriptMetadata.model_json_schema(),
+    )
     raw['session_id'] = session_id
     raw['metadata_version'] = settings.metadata_version
     return TranscriptMetadata.model_validate(raw).model_dump(mode='json')

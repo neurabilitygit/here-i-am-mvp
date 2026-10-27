@@ -85,3 +85,21 @@ def test_batch_failed_preload_still_unloads_both_models(monkeypatch):
             pytest.fail('must not enter failed batch')
     assert events == ['embed', 'analysis']
     assert client._embedding_context.batch_active is False
+def test_metadata_json_schema_reaches_ollama_without_extra_generation(monkeypatch):
+    from types import SimpleNamespace
+    from services.ollama_client import OllamaClient
+    from services import pipeline
+    from models.schemas import TranscriptMetadata
+    calls=[]
+    def post(url,**kwargs):
+        calls.append(kwargs['json'])
+        return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'response':'{"title":"A memory","summary":"Recorded words","session_id":"wrong"}'})
+    monkeypatch.setattr('services.ollama_client.requests.post',post)
+    monkeypatch.setattr('services.ollama_client.release_idle_voice',lambda:None)
+    monkeypatch.setattr(pipeline,'ollama_client',OllamaClient('http://local','chat','analysis','embed'))
+    result=pipeline.generate_metadata('correct-session','Recorded words')
+    assert result['session_id']=='correct-session'
+    assert result['topics']==[]
+    assert len(calls)==1
+    assert calls[0]['format']==TranscriptMetadata.model_json_schema()
+    assert calls[0]['options']['temperature']==0

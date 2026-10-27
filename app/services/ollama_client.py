@@ -95,13 +95,14 @@ class OllamaClient:
         prompt: str,
         *,
         json_mode: bool = False,
+        json_schema: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         context_tokens: int | None = None,
     ) -> str:
         release_idle_voice()
         start = time.time()
         options = {
-            "temperature": 0 if json_mode else settings.chat_temperature,
+            "temperature": 0 if json_mode or json_schema is not None else settings.chat_temperature,
             "num_ctx": context_tokens or settings.ollama_chat_context_tokens,
         }
         if max_tokens is not None:
@@ -117,7 +118,7 @@ class OllamaClient:
                 "think": False,
                 "keep_alive": settings.ollama_keep_alive,
                 "options": options,
-                **({"format": "json"} if json_mode else {}),
+                **({"format": json_schema if json_schema is not None else "json"} if json_mode or json_schema is not None else {}),
             },
             timeout=300,
         )
@@ -272,11 +273,12 @@ class OllamaClient:
     def preload_all(self) -> bool:
         return self.preload() and self.preload_embeddings()
 
-    def generate_json(self, prompt: str) -> dict[str, Any]:
+    def generate_json(self, prompt: str, *, schema: dict[str, Any] | None = None) -> dict[str, Any]:
         raw = self._generate(
             self.analysis_model,
             prompt,
             json_mode=True,
+            json_schema=schema,
             max_tokens=settings.ollama_analysis_max_tokens,
             context_tokens=settings.ollama_analysis_context_tokens,
         ).strip()
@@ -292,9 +294,12 @@ class OllamaClient:
             raw = raw[start:end + 1]
 
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Model did not return valid JSON: {raw[:500]}") from exc
+            raise RuntimeError('Model did not return valid JSON') from exc
+        if not isinstance(result, dict):
+            raise RuntimeError('Model did not return a JSON object')
+        return result
 
     def _embed_one_legacy(self, text: str) -> list[float]:
         start = time.time()
