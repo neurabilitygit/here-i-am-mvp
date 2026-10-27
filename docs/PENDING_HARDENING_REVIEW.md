@@ -321,3 +321,55 @@ then production service management, full backup/rollback rehearsal and deliberat
 cutover approval. The current launcher intentionally blocks inference and VPN
 exposure; it is not a production-ready replacement or a claim of completed
 voice, latency, or all eight roadmap stages.
+
+### Isolated cloned voice and private phone pilot (2026-10-27)
+
+The next acceptance used a fresh restore (`voice-acceptance`) with 72 session
+copies and 208 vectors, independent credentials/cache, native backend port 8792
+and a separate authenticated MLX bridge on 8793. It reused the installed MLX
+runtime and exact locally cached Qwen3-TTS 0.6B BF16 snapshot offline. No cloud
+voice or answer service was used. Original references were not edited.
+
+Measured results for one short fixture (not a representative benchmark):
+
+| Check | Observed result |
+|---|---|
+| Complete WAV | 10.005 seconds of non-silent audio |
+| First full request | 30.215 seconds |
+| Bridge synthesis | 26.962 seconds, 2 segments, RTF 2.695 |
+| Identical repeat | 0.054 seconds; identical WAV bytes |
+| Active request cancellation | Released in 3.561 seconds |
+| Model controls | Active unload refused; idle unload succeeded |
+| Desktop WebKit playback | One click, nonzero audio signal, completion, answer retained |
+| Reference preservation | Both copied reference files unchanged |
+
+This is successful functional integration, not proof that long-answer synthesis
+is fast enough or that voice fidelity is acceptable. BF16/4-bit comparison,
+larger samples, and physical-speaker confirmation remain open. The installed
+MLX/Transformers model-architecture warning did not prevent the fixture from
+completing but remains a compatibility observation.
+
+The user then approved a separate physical iPhone pilot. A private Tailscale
+HTTPS route on 8443 now points only to the pilot; the normal 443→8787 route was
+verified unchanged. The pilot has a rotated independent passphrase, separate
+host-scoped cookie name, exact trusted origin, copied data, and no cloud keys.
+Talk inference, embedding, voice enrollment/revocation and destructive changes
+remain disabled. A clearly labeled “Load voice test” control loads the complete
+accepted sample into the real playback controls. Remember uploads remain enabled
+only against the isolated copy. The supervisor is left running for the user test.
+
+Automated mobile WebKit through the real HTTPS route passed login, preservation
+of a sentinel production cookie, unauthorized-audio rejection, disabled inference
+and embedding, Ready—Play with one click, native HTML audio time advancement
+(unmuted, volume 1), playback completion, retained answer on Talk, secure microphone
+API availability, and navigation to Remember. No JavaScript errors were observed.
+**Physical iPhone speaker output and microphone recording/save are not yet verified.**
+
+Regression: 194 backend tests passed with 14 upstream deprecation warnings; Ruff
+and JavaScript syntax passed. A preliminary test invocation omitted the repository's
+documented `PYTHONPATH=app` and failed collection; the corrected invocation passed.
+Final preservation checks found zero mismatches across 573 original files;
+production and pilot both still had 208 vectors, and production health was OK.
+Private voice/phone evidence and the sample are in ignored
+`reports/private/native-voice-20261027/`. No credentials or personal audio are
+committed. No APFS change, production cutover, or Chroma deletion occurred.

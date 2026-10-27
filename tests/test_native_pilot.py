@@ -57,6 +57,41 @@ def test_native_pilot_never_overwrites_initialization(tmp_path):
     assert (state/'passphrase.json').read_bytes()==before
 
 
+def test_native_pilot_password_rotation_keeps_data_and_voice_secret(tmp_path):
+    root,state=data_copy(tmp_path)
+    pilot.initialize(root,state,'synthetic pilot password')
+    before=(state/'passphrase.json').read_bytes()
+    voice=(state/'voice-bridge-token.json').read_bytes()
+    (state/'auth_tokens.json').write_text('{"tokens":[{"old":"session"}]}')
+    pilot.rotate_passphrase(root,state,'new synthetic pilot password')
+    assert (state/'passphrase.json').read_bytes()!=before
+    assert (state/'voice-bridge-token.json').read_bytes()==voice
+    assert json.loads((state/'auth_tokens.json').read_text()) == {'tokens':[]}
+    assert (root/'appdata/chroma/chroma.sqlite3').read_bytes()==b'synthetic'
+    assert pilot.check_initialized(root,state)
+
+
+@pytest.mark.parametrize('origin',[
+    'http://test.tailnet.ts.net:8443','https://test.tailnet.ts.net',
+    'https://test.tailnet.ts.net:443','https://example.com:8443',
+    'https://test.tailnet.ts.net:8443/','https://user@test.tailnet.ts.net:8443',
+    'https://test.tailnet.ts.net:8443?x=1','https://test.tailnet.ts.net:8443#test',
+    'https://test.tailnet.ts.net.evil.example:8443',
+])
+def test_native_pilot_rejects_nonisolated_https_origins(origin):
+    with pytest.raises(ValueError):
+        pilot.validate_pilot_origin(origin)
+
+
+def test_native_pilot_exact_https_origin_and_separate_cookie(tmp_path):
+    root,state=data_copy(tmp_path)
+    origin='https://test.tailnet.ts.net:8443'
+    settings=pilot.settings_for(root,state,8792,origin)
+    assert settings['trusted_hosts']=='127.0.0.1,localhost,test.tailnet.ts.net'
+    assert settings['cors_origins']=='http://127.0.0.1:8792,'+origin
+    assert pilot.PILOT_COOKIE != 'here_i_am_session'
+
+
 def test_native_pilot_settings_ignore_cloud_keys_and_original_paths(tmp_path,monkeypatch):
     monkeypatch.setenv('OPENAI_API_KEY','must-not-be-used')
     root,state=data_copy(tmp_path)
@@ -76,6 +111,30 @@ def test_native_pilot_limits_mutations():
     for path in ['/api/voice/speak','/api/memory-batch/start','/api/ollama/start','/api/chat','/api/speakers']:
         assert not pilot.mutation_allowed('POST',path)
     assert not pilot.mutation_allowed('DELETE','/api/sessions/example')
+
+
+def test_native_pilot_voice_opt_in_is_narrow():
+    assert pilot.mutation_allowed('POST','/api/voice/speak',voice_enabled=True)
+    assert pilot.mutation_allowed('POST','/api/voice/cancel/test-1',voice_enabled=True)
+    for path in ['/api/voice/revoke','/api/voice/prepare','/api/voice/cache/clear','/api/chat','/api/voice/cancel/../escape']:
+        assert not pilot.mutation_allowed('POST',path,voice_enabled=True)
+
+
+def test_native_pilot_voice_requires_private_token(tmp_path):
+    root,state=data_copy(tmp_path)
+    pilot.initialize(root,state,'synthetic pilot password')
+    (state/'voice-bridge-token.json').chmod(0o644)
+    with pytest.raises(ValueError,match='private'):
+        pilot.voice_settings(root,state)
+
+
+def test_native_pilot_voice_refuses_cloud_reference(tmp_path):
+    root,state=data_copy(tmp_path)
+    pilot.initialize(root,state,'synthetic pilot password')
+    (root/'appdata/voice').mkdir()
+    (root/'appdata/voice/voice_status.json').write_text(json.dumps({'provider':'elevenlabs','consented':True,'enabled':True}))
+    with pytest.raises(ValueError,match='local voice'):
+        pilot.voice_settings(root,state)
 
 
 @pytest.mark.parametrize('value',[{}, {'algorithm':'bad'}, {'algorithm':'pbkdf2_sha256','iterations':600000,'salt':None,'hash':None}])

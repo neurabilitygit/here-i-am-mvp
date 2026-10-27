@@ -20,11 +20,14 @@ import shutil
 import socket
 import stat
 import sys
+from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 LOCK = REPO / 'requirements-native-macos-arm64-py311.lock'
 PRODUCTION = Path('/Volumes/Personal/here-i-am')
 MARKER = '.here-i-am-native-pilot.json'
+PILOT_COOKIE = 'here_i_am_pilot_session'
+VOICE_TEST_TEXT = 'This is a local voice test for Here I Am. My recorded voice is being used on this Mac, and the complete answer is ready before playback begins.'
 
 
 def inside(path: Path, parent: Path) -> bool:
@@ -69,6 +72,7 @@ def initialize(root: Path, state: Path, passphrase: str) -> None:
     record = {'algorithm':'pbkdf2_sha256', 'iterations':600000, 'salt':salt.hex(),
               'hash':hashlib.pbkdf2_hmac('sha256',passphrase.encode(),salt,600000).hex()}
     write_private_new(state / 'passphrase.json', record)
+    write_private_new(state / 'voice-bridge-token.json', {'token':secrets.token_urlsafe(32)})
     write_private_new(root / MARKER, {'version':1,'data_root':str(root),'state_dir':str(state),'purpose':'isolated-native-pilot'})
 
 
@@ -92,6 +96,32 @@ def check_initialized(root: Path, state: Path) -> tuple[Path, Path]:
     return root, state
 
 
+def rotate_passphrase(root: Path, state: Path, passphrase: str) -> None:
+    """Rotate only this stopped pilot's credentials; never reuse production auth."""
+    _, state = check_initialized(root, state)
+    if len(passphrase) < 12:
+        raise ValueError('Use a separate pilot passphrase of at least 12 characters')
+    salt = secrets.token_bytes(16)
+    record = {'algorithm':'pbkdf2_sha256', 'iterations':600000, 'salt':salt.hex(),
+              'hash':hashlib.pbkdf2_hmac('sha256',passphrase.encode(),salt,600000).hex()}
+    for name, data in [('auth_tokens.json', {'tokens':[]}), ('passphrase.json', record)]:
+        temporary = state / (name + '.' + secrets.token_hex(8) + '.tmp')
+        write_private_new(temporary, data)
+        os.replace(temporary, state / name)
+
+
+def validate_pilot_origin(origin: str) -> str:
+    if not origin:
+        return ''
+    parsed = urlsplit(origin)
+    if (parsed.scheme != 'https' or not parsed.hostname or not parsed.hostname.endswith('.ts.net')
+            or parsed.port != 8443 or parsed.username or parsed.password
+            or parsed.path or parsed.query or parsed.fragment
+            or origin != f'https://{parsed.hostname}:8443'):
+        raise ValueError('Pilot origin must be an exact private https://hostname.ts.net:8443 origin')
+    return parsed.hostname
+
+
 def check_runtime() -> None:
     if platform.system() != 'Darwin' or platform.machine() != 'arm64' or sys.version_info[:3] != (3,11,14):
         raise ValueError('Pilot requires the validated macOS arm64 Python 3.11.14 runtime')
@@ -106,7 +136,8 @@ def check_runtime() -> None:
             raise ValueError(f'Missing native audio utility: {executable}')
 
 
-def settings_for(root: Path, state: Path, port: int) -> dict:
+def settings_for(root: Path, state: Path, port: int, pilot_origin: str = '') -> dict:
+    hostname = validate_pilot_origin(pilot_origin)
     paths = {'sessions_dir':'library/sessions','archive_dir':'library/archive','chroma_dir':'appdata/chroma',
         'logs_dir':'appdata/logs','tmp_dir':'appdata/tmp','jobs_dir':'appdata/jobs','exports_dir':'appdata/exports',
         'backup_root':'appdata/backups','preferences_path':'appdata/preferences.json',
@@ -117,7 +148,8 @@ def settings_for(root: Path, state: Path, port: int) -> dict:
     values.update(data_root=str(root), voice_host_data_root=str(root), locks_dir=str(state/'locks'),
         local_workload_lock_path=str(state/'inference.lock'), auth_tokens_path=str(state/'auth_tokens.json'),
         auth_passphrase_hash_file=str(state/'passphrase.json'), host='127.0.0.1',port=port,
-        trusted_hosts='127.0.0.1,localhost', cors_origins=f'http://127.0.0.1:{port}',
+        trusted_hosts='127.0.0.1,localhost' + (',' + hostname if hostname else ''),
+        cors_origins=f'http://127.0.0.1:{port}' + (',' + pilot_origin if hostname else ''),
         ollama_base_url='http://127.0.0.1:1',ollama_control_url='http://127.0.0.1:1',
         voice_bridge_url='http://127.0.0.1:1',openai_base_url='http://127.0.0.1:1',
         voice_provider='disabled',speaker_diarization_provider='disabled',local_bridge_token='',
@@ -126,8 +158,10 @@ def settings_for(root: Path, state: Path, port: int) -> dict:
     return values
 
 
-def mutation_allowed(method: str, path: str) -> bool:
+def mutation_allowed(method: str, path: str, *, voice_enabled: bool = False) -> bool:
     if method in {'GET','HEAD'}:
+        return True
+    if voice_enabled and method == 'POST' and (path == '/api/voice/speak' or re.fullmatch(r'/api/voice/cancel/[A-Za-z0-9_-]{1,80}',path)):
         return True
     return method == 'POST' and (path in {'/api/auth/login','/api/auth/logout','/api/activity-events','/api/recordings/upload'}
         or bool(re.fullmatch(r'/api/sessions/[A-Za-z0-9_-]+/recording/retry',path)))
@@ -141,7 +175,36 @@ def check_port(port: int) -> None:
         s.bind(('127.0.0.1',port))
 
 
-def run(root: Path, state: Path, port: int) -> None:
+def voice_settings(root: Path, state: Path) -> dict:
+    """Opt in only to the separately authenticated pilot bridge on port 8793."""
+    import requests
+    token_file=state/'voice-bridge-token.json'
+    if token_file.is_symlink() or stat.S_IMODE(token_file.stat().st_mode) != 0o600:
+        raise ValueError('Pilot voice token must be private')
+    token=json.loads(token_file.read_text()).get('token')
+    if not isinstance(token,str) or len(token)<32:
+        raise ValueError('Invalid pilot voice token')
+    voice=root/'appdata/voice'
+    status=json.loads((voice/'voice_status.json').read_text())
+    if status.get('provider') != 'local' or status.get('consented') is not True or status.get('enabled') is not True:
+        raise ValueError('Pilot requires an existing consented local voice clone')
+    if not (voice/'voice_reference.wav').is_file() or not (voice/'voice_reference.txt').is_file():
+        raise ValueError('Copied voice reference is missing')
+    try:
+        with requests.Session() as client:
+            client.trust_env=False
+            health=client.get('http://127.0.0.1:8793/health',timeout=3)
+            health.raise_for_status()
+            if health.json().get('build_commit') != 'native-voice-pilot':
+                raise ValueError('This is not the isolated pilot voice bridge')
+            response=client.post('http://127.0.0.1:8793/auth/check',headers={'X-Here-I-Am-Local':token},timeout=3)
+            response.raise_for_status()
+    except requests.RequestException as exc:
+        raise ValueError('Isolated voice bridge is unavailable or did not authorize this pilot') from exc
+    return {'voice_provider':'local','voice_bridge_url':'http://127.0.0.1:8793','local_bridge_token':token}
+
+
+def run(root: Path, state: Path, port: int, *, enable_voice: bool = False, pilot_origin: str = '') -> None:
     if port < 1024 or port > 65535 or port in {8787,8778,8779,11434}:
         raise ValueError('Use a separate unprivileged pilot port (default 8792)')
     root, state = check_initialized(root,state)
@@ -154,45 +217,71 @@ def run(root: Path, state: Path, port: int) -> None:
     os.chdir(state)
     sys.path.insert(0,str(REPO/'app'))
     import config
-    config.settings = config.Settings(_env_file=None, **settings_for(root,state,port))
+    values=settings_for(root,state,port,pilot_origin)
+    if enable_voice:
+        values.update(voice_settings(root,state))
+    config.settings = config.Settings(_env_file=None, **values)
+    # Cookies are host-scoped, not port-scoped. Never overwrite the production
+    # cookie when this test is served on another port of the same Tailscale host.
+    from services import auth
+    auth.SESSION_COOKIE_NAME = PILOT_COOKIE
     from main import app
-    from starlette.responses import JSONResponse
+    from starlette.responses import FileResponse, JSONResponse, Response
     import uvicorn
+    if pilot_origin:
+        @app.get('/api/pilot/voice-sample')
+        def voice_sample():
+            sample = state / 'local-clone-test.wav'
+            if not enable_voice or not sample.is_file():
+                return JSONResponse({'detail':'Pilot voice sample is unavailable'},status_code=404)
+            return FileResponse(sample,media_type='audio/wav',headers={'Cache-Control':'no-store'})
+
     @app.middleware('http')
     async def pilot_guard(request, call_next):
         # Existing app supports unconfigured auth for CI. Pilot must fail closed
         # even if its hash disappears after startup.
         if not auth_record_valid(state/'passphrase.json'):
             return JSONResponse({'detail':'Pilot authentication unavailable'},status_code=503)
-        if not mutation_allowed(request.method,request.url.path):
+        if not mutation_allowed(request.method,request.url.path,voice_enabled=enable_voice):
             return JSONResponse({'detail':'This operation is disabled in the isolated storage pilot'},status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        if pilot_origin and request.method == 'GET' and request.url.path == '/' and response.status_code == 200:
+            body = b''.join([chunk async for chunk in response.body_iterator])
+            body = body.replace(b'</body>', b'<script src="/static/native-pilot.js" defer></script></body>')
+            headers = {k:v for k,v in response.headers.items() if k.lower() != 'content-length'}
+            return Response(body,status_code=response.status_code,headers=headers)
+        return response
     print(f'Isolated native pilot: http://127.0.0.1:{port} (Ctrl-C to stop)',flush=True)
     uvicorn.run(app,host='127.0.0.1',port=port,access_log=False,limit_concurrency=32)
 
 
 def main() -> int:
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=['init','check','run'])
+    p.add_argument('command',choices=['init','check','run','set-passphrase'])
     p.add_argument('--data-root',type=Path,required=True)
     p.add_argument('--state-dir',type=Path,required=True)
     p.add_argument('--port',type=int,default=8792)
     p.add_argument('--confirm-isolated-copy',action='store_true')
+    p.add_argument('--enable-local-voice',action='store_true',help='Use only the separately authenticated pilot bridge on port 8793')
+    p.add_argument('--pilot-origin',default='',help='Explicit private Tailscale HTTPS origin on port 8443; does not configure VPN routing')
     args=p.parse_args()
     try:
-        if args.command=='init':
-            if not args.confirm_isolated_copy:
+        if args.command in {'init','set-passphrase'}:
+            if args.command == 'init' and not args.confirm_isolated_copy:
                 raise ValueError('Explicit --confirm-isolated-copy is required')
             password=getpass.getpass('New separate pilot passphrase: ')
             if password != getpass.getpass('Confirm pilot passphrase: '):
                 raise ValueError('Passphrases did not match')
-            initialize(args.data_root,args.state_dir,password)
+            if args.command == 'init':
+                initialize(args.data_root,args.state_dir,password)
+            else:
+                rotate_passphrase(args.data_root,args.state_dir,password)
         elif args.command=='check':
             check_initialized(args.data_root,args.state_dir)
             check_runtime()
             print('Native pilot paths, authentication, and pinned runtime verified.')
         else:
-            run(args.data_root,args.state_dir,args.port)
+            run(args.data_root,args.state_dir,args.port,enable_voice=args.enable_local_voice,pilot_origin=args.pilot_origin)
         return 0
     except (ValueError,OSError,importlib.metadata.PackageNotFoundError) as exc:
         print(f'Pilot refused to start: {exc}',file=sys.stderr)

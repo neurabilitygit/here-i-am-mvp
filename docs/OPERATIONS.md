@@ -98,7 +98,8 @@ Open `http://127.0.0.1:8792` in Safari; stop with Ctrl-C. It binds only loopback
 ignores shell/cloud credentials and `.env`, and disables inference. The pilot
 allows only login/logout, activity logging, recording upload, and recording
 validation retry mutations. Other mutations are rejected. It is intentionally
-not usable for Talk inference, voice generation, embedding, or iPhone access.
+not usable for Talk inference or embedding. Voice and iPhone access require
+the explicit opt-ins below; both remain off by default.
 Authentication fails closed if its private hash disappears while running.
 
 The native lock pins 120 installed distribution versions, including test tools;
@@ -115,7 +116,55 @@ its own server, uses Node/Playwright WebKit, adds two synthetic recordings, test
 recovery/restart, and stops its server. It retains recordings and private logs;
 it never deletes Chroma. It is not a physical microphone/iPhone test. State and
 credentials from this automated run are test-only; use a separately restored
-copy and the interactive `init` command for a human-operated pilot.
+copy and the interactive `init` command for a human-operated pilot. To reuse
+an accepted copy for a device test, stop it and use `set-passphrase` to rotate
+its independent password and revoke its old test sessions first.
+
+#### Isolated cloned voice and iPhone acceptance
+
+`scripts/check_native_voice.py` accepts a fresh restored copy plus
+`--voice-python`, `--model-path`, and `--confirm-local-clone-test`. It reuses an
+installed MLX runtime and downloaded model offline. It starts a private-token
+bridge on loopback 8793, then opts the pilot into that bridge with
+`--enable-local-voice`. It checks complete-WAV output, identical cached output,
+one-click desktop WebKit playback, cancellation, and idle model unloading.
+It saves a short `local-clone-test.wav` in the private state directory and
+stops its children afterward. It does not alter production voice references.
+
+For a separately approved physical phone test, `scripts/run_native_phone_pilot.py`
+supervises these same two services against the accepted copy. Required arguments
+are `--data-root`, `--state-dir`, `--voice-python`, `--model-path`, and
+`--pilot-origin https://YOUR-MAC.YOUR-TAILNET.ts.net:8443`. Use `daemonize.py`
+with private PID/log files if the manual test must outlive the terminal. Stop
+the recorded supervisor PID only after verifying it is this pilot; it then
+terminates only its own two child processes. Never terminate production bridges.
+
+The origin must be HTTPS on a `.ts.net` hostname at port 8443. The application
+still binds only loopback, and uses a distinct `here_i_am_pilot_session` cookie
+so logging into the test cannot overwrite the production login on port 443.
+VPN routing is deliberately a separate operator action:
+
+```sh
+# Inspect first. Do not replace an occupied route or reset existing routes.
+tailscale serve status --json
+tailscale serve --bg --https=8443 http://127.0.0.1:8792
+# After the physical test, remove only this added route:
+tailscale serve --https=8443 off
+```
+
+Do not use Funnel. Confirm the production 443→8787 route is identical afterward.
+The opted-in pilot adds a clearly labeled test-copy panel and authenticated
+sample-audio endpoint. “Load voice test” loads the accepted complete WAV into
+the real app playback controls; “Ready—Play” then exercises the normal iOS audio
+path without another generation delay. This does not test generation speed on
+the phone. Questions and memory processing remain disabled; Remember can record
+and save only to the copied test library. All copies and Chroma records remain.
+
+`scripts/check_native_phone_browser.cjs` reads its URL/passphrase on stdin and
+checks mobile WebKit login, cookie isolation, authenticated audio, native-audio
+time advancement, complete playback, retained answer, and the Remember screen.
+Emulation is not physical iPhone speaker or microphone confirmation. The user
+must hear the sample and make/save a short recording on their actual device.
 
 ### Local workload controls (candidate, not deployed)
 
