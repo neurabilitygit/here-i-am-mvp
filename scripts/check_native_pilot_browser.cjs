@@ -15,6 +15,7 @@ process.stdin.on('end',async()=>{
     await page.locator('#login-submit').click();
     await expect(page.locator('#login-dialog')).toBeHidden();
     await expect(page.locator('#talk-scene')).toBeVisible();
+    await page.waitForLoadState('networkidle');
     await page.locator('[data-go="remember"]').click();
     await page.locator('#record-title').fill('Synthetic native recovery acceptance');
     await page.route('**/api/recordings/upload',route=>route.abort('failed'));
@@ -24,6 +25,7 @@ process.stdin.on('end',async()=>{
     },audio);
     await page.evaluate(()=>window.uploadRecording());
     await expect(page.locator('#record-retry')).toBeVisible();
+    await page.waitForLoadState('networkidle');
     await page.reload();
     await page.locator('[data-go="remember"]').click();
     await expect(page.locator('#recording-status')).toContainText('recovered on this device');
@@ -35,7 +37,7 @@ process.stdin.on('end',async()=>{
     const payload=await response.json();
     await expect(page.locator('#recording-status')).toContainText('safe and waiting');
     await expect.poll(()=>page.evaluate(()=>window.RecordingDrafts.oldest())).toBeNull();
-    if(errors.length)throw Error('Unexpected browser JavaScript error');
+    if(errors.length)throw Error('Unexpected browser JavaScript error: '+JSON.stringify(errors));
     console.log(JSON.stringify({login_ui:true,draft_recovered_after_reload:true,real_retry_upload:true,
       draft_removed_after_ack:true,session_id:payload.session_id,page_error_count:errors.length}));
   } catch(error) {
