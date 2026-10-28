@@ -13,6 +13,7 @@ const state = {
   recordDraftId: '', recordDraftWrites: Promise.resolve(), recordDraftFailed: false,
   recordDraftStored: new Set(),
   chatAbort: null, chatGeneration: 0,
+  chatThinkingTimer: null,
   voiceAbort: null, voiceRequestId: null, voiceTimeout: null,
   voiceAnswerText: '', voiceGeneration: 0,
   voicePreparing: false, voiceTimedOut: false, voiceSources: [], voiceNextTime: 0,
