@@ -3,10 +3,11 @@
 ## Runtime boundary
 
 ```text
-Browser :8787
-  -> FastAPI + static UI (Docker)
+Safari / iPhone Safari
+  -> localhost :8787 or private Tailscale HTTPS
+  -> FastAPI + static UI (native macOS, supervised)
      -> session filesystem (authoritative)
-     -> durable job JSON + advisory locks
+     -> durable job JSON + private internal-state advisory locks
      -> faster-whisper (CPU transcription)
      -> OpenAI diarized transcription (explicit two-person conversation batches)
      -> Chroma (derived vector index)
@@ -15,7 +16,13 @@ Browser :8787
      -> OpenAI / ElevenLabs APIs (optional, explicit cloud mode)
 ```
 
-The root `Dockerfile`, `docker-compose.yml`, and `app/` define the active runtime. The duplicate `backend/`, `frontend/`, `worker/`, and nested `app/app/` trees are dormant prototypes. They remain in place for historical comparison but must not receive new product changes.
+`app/` defines the active application. `scripts/native_deployment.py` and the
+private production profile select the verified immutable source and pinned
+native runtime. Root Docker files remain for testing and the retained legacy
+deployment; they no longer run production. See the
+[native cutover record](NATIVE_MIGRATION_2026-10-27.md).
+The duplicate `backend/`, `frontend/`, `worker/`, and nested `app/app/` trees are
+dormant prototypes and must not receive new product changes.
 
 ## Data pipeline
 
@@ -26,7 +33,7 @@ The root `Dockerfile`, `docker-compose.yml`, and `app/` define the active runtim
 5. Unknown conversation voices pause at a mandatory name-and-role review. Exactly one voice is the memory subject. The pipeline writes labeled turns plus subject-only memory units; interviewer speech remains retrieval context and cannot become autobiographical evidence.
 6. The same batch uses the strongest configured local Gemma generation model to create validated metadata, semantic word-bounded chunks, portable JSONL, and voice-profile evidence.
 7. The purpose-built local `embeddinggemma` model creates vectors in the active Chroma collection. Both Gemma models are unloaded when the batch ends, including on failure. OpenAI has no embedding path.
-8. Chat retrieves a broad vector candidate set, reranks it by lexical overlap with the question, and expands the strongest matches with neighboring chunks from the same recording. Query vectors also use local `embeddinggemma`, which is unloaded after the query.
+8. Chat retrieves a broad vector candidate set, reranks it by lexical overlap with the question, and expands the strongest matches with neighboring chunks from the same recording. Query vectors also use local `embeddinggemma`. The local-workload candidate keeps it resident for five idle minutes; explicit indexing batches still unload it on exit.
 9. Questions route to `PERSONAL`, `GENERAL`, or `HYBRID`. Personal context is tagged as untrusted evidence, bounded by chunk and character limits, and source session IDs are returned separately.
 10. A provider layer streams generation tokens from local Ollama or an explicitly selected OpenAI model. The comparison endpoint prepares retrieval and the speaker prompt once, then runs both providers in parallel against that identical evidence so the benchmark measures answer generation rather than embedding or TTS differences.
 11. The speaker fingerprint measures transcript vocabulary/rhythm and original-audio pace without modifying source recordings.
@@ -36,6 +43,9 @@ The root `Dockerfile`, `docker-compose.yml`, and `app/` define the active runtim
 
 - Session artifacts use temporary-file, fsync, and atomic replace semantics.
 - Per-session advisory locks prevent concurrent transcript/analysis mutation.
+  Native production keeps coordination files in protected internal service state,
+  separate from the unchanged external data root. The legacy Docker/ExFAT bind
+  mount had ineffective cross-process locks in diagnostic tests.
 - A single-worker durable job manager plus cross-process advisory locks prevents conflicting jobs of the same mode.
 - The local MLX voice bridge accepts only one synthesis at a time. A sentence-foundry stage creates 15–30-word speech units; groups of up to four use MLX shared-reference batch generation with per-sequence text-length limits. The bridge reuses reference conditioning, stitches the units into one WAV, persists answer/voice/speed cache entries, and returns only the completed file to Safari. Request IDs, disconnect-aware cancellation, segment progress, busy age, a 110-second no-progress watchdog, and a 120-second per-attempt ceiling prevent abandoned work from becoming an invisible stale lock. Completed segment files remain resumable after a timed-out attempt.
 - Transcript edits preserve immutable prior revisions and immediately make the prior vector version ineligible for retrieval.
@@ -46,6 +56,15 @@ The root `Dockerfile`, `docker-compose.yml`, and `app/` define the active runtim
 
 ## Trust boundaries
 
-The service is intended for localhost. Compose publishes only to `127.0.0.1`, trusted hosts and CORS are restricted, cross-origin mutations are rejected, uploads are bounded by encoded size and decoded duration, production API documentation is disabled, and the read-only container runs as a non-root user. Authentication and encryption at rest remain requirements before any network exposure.
+The native service binds only to `127.0.0.1`; private Tailscale Serve provides
+the authenticated HTTPS phone route. Trusted hosts and CORS are restricted,
+cross-origin mutations are rejected, uploads are bounded by encoded size and
+decoded duration, and production API documentation is disabled. The production
+wrapper fails closed if the passphrase hash or original database is missing.
+Native processes run as the logged-in macOS user, not root, but no longer have
+container filesystem isolation. Protect the user account and external drive;
+this cutover did not add encryption to the ExFAT data volume. Protected internal
+profiles/secrets and source manifests are not a substitute for encrypted offsite
+backups or physical device security.
 
 Cloud is explicit and purpose-specific. Talk requests contain only the current question, selected context, speaker instructions, and a bounded derived speaking-style profile. A conversation batch sends its compressed audio analysis copy to the configured diarization provider. Avatar generation sends the consented face photo and an art-style reference. API keys are sourced from environment variables, a protected file, or process memory and never persisted in experience preferences. Embeddings always remain local.

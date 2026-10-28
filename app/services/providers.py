@@ -202,6 +202,9 @@ def transition_provider(previous: str, current: str) -> None:
 
 
 def public_provider_error(provider: str, exc: Exception) -> str:
+    from services.local_workloads import LocalWorkloadBusy
+    if isinstance(exc, LocalWorkloadBusy):
+        return str(exc)
     if provider == 'openai':
         if isinstance(exc, requests.Timeout):
             return 'OpenAI took too long to answer. Your provider setting was not changed.'
@@ -236,7 +239,7 @@ def record_stream_audit(
         'input_tokens': usage.get('input_tokens'),
         'output_tokens': usage.get('output_tokens'),
         'grounding_check_passed': grounding_check_passed,
-        'grounding_check_kind': 'deterministic_heuristic_v2',
+        'grounding_check_kind': 'deterministic_heuristic_v3',
         'grounding_reasons': (grounding_reasons or [])[:10],
     })
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import gc
 import hashlib
 import logging
 import os
@@ -34,6 +35,7 @@ MAX_REQUEST_SECONDS = max(
 CACHE_LIMIT = max(8, int(os.environ.get('QWEN_TTS_CACHE_LIMIT', '96')))
 CACHE_MAX_BYTES = max(128 * 1024 * 1024, int(os.environ.get('QWEN_TTS_CACHE_MAX_BYTES', str(2 * 1024 * 1024 * 1024))))
 CACHE_DIR = os.environ.get('QWEN_TTS_CACHE_DIR', '')
+MODEL_IDLE_SECONDS = max(30, int(os.environ.get('QWEN_TTS_MODEL_IDLE_SECONDS', '120')))
 CACHE_SCHEMA_VERSION = 'sentence-foundry-v3-clean-boundaries'
 APP_BUILD_COMMIT = os.environ.get('APP_BUILD_COMMIT', 'unknown')
 app = FastAPI(title='Here I Am MLX voice bridge')
@@ -56,6 +58,8 @@ _active_segments_complete = 0
 _reference_cache_signature: tuple[str, int, int] | None = None
 _reference_cache_audio = None
 _revoke_pending = False
+_idle_timer: threading.Timer | None = None
+_activity_generation = 0
 
 
 @app.middleware('http')
@@ -387,6 +391,7 @@ def speech_units(text: str, limit: int = 48) -> list[str]:
 def begin_generation(request_id: str, key: str, segments_total: int) -> tuple[str, threading.Event] | None:
     global _active_request_id, _active_started_at, _active_first_frame_at, _active_cancel_event
     global _active_cache_key, _active_segments_total, _active_segments_complete
+    global _activity_generation
     if not _generation_lock.acquire(blocking=False):
         return None
     if _revoke_pending:
@@ -395,6 +400,9 @@ def begin_generation(request_id: str, key: str, segments_total: int) -> tuple[st
     identifier = request_id or uuid.uuid4().hex
     cancel_event = threading.Event()
     with _state_lock:
+        _activity_generation += 1
+        if _idle_timer is not None:
+            _idle_timer.cancel()
         _active_request_id = identifier
         _active_started_at = time.monotonic()
         _active_first_frame_at = 0.0
@@ -422,6 +430,7 @@ def mark_segments_complete(request_id: str, count: int) -> None:
 def finish_generation(request_id: str) -> None:
     global _active_request_id, _active_started_at, _active_first_frame_at, _active_cancel_event
     global _active_cache_key, _active_segments_total, _active_segments_complete
+    global _idle_timer
     should_release = False
     with _state_lock:
         if _active_request_id == request_id:
@@ -439,6 +448,43 @@ def finish_generation(request_id: str) -> None:
                 purge_voice_identity()
         finally:
             _generation_lock.release()
+            with _state_lock:
+                if _idle_timer is not None:
+                    _idle_timer.cancel()
+                if not _active_request_id:
+                    _idle_timer = threading.Timer(MODEL_IDLE_SECONDS, unload_idle_model, kwargs={'expected_generation': _activity_generation})
+                    _idle_timer.daemon = True
+                    _idle_timer.start()
+
+
+def unload_idle_model(*, expected_generation: int | None = None) -> bool:
+    """Free only in-memory weights/conditioning. Preserve reference and WAVs."""
+    global _model, _reference_cache_signature, _reference_cache_audio
+    if not _generation_lock.acquire(blocking=False):
+        return False
+    try:
+        if expected_generation is not None and expected_generation != _activity_generation:
+            return False
+        with _model_lock:
+            _model = None
+            _reference_cache_signature = None
+            _reference_cache_audio = None
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.clear_cache()
+            except ImportError:
+                pass
+        return True
+    finally:
+        _generation_lock.release()
+
+
+@app.post('/model/unload')
+def unload_model_endpoint():
+    if not unload_idle_model():
+        raise HTTPException(status_code=409, detail='Voice is still preparing audio; memory was not released')
+    return {'status': 'unloaded', 'prepared_audio_preserved': True}
 
 
 def purge_voice_identity() -> None:
@@ -476,6 +522,7 @@ def health():
         'model': MODEL_ID,
         'model_revision': MODEL_REVISION or 'un-pinned',
         'model_loaded': _model is not None,
+        'model_idle_seconds': MODEL_IDLE_SECONDS,
         'device': 'mlx',
         'streaming': True,
         'batch_wav': True,

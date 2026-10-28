@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# A completed native cutover owns the normal ports. Keep the Docker launcher
+# available only as an explicit, operator-reviewed rollback path.
+NATIVE_PROFILE="${HERE_I_AM_DEPLOYMENT_PROFILE:-/Users/ericbass/Library/Application Support/Here-I-Am/native-production/production.json}"
+if [[ -f "$NATIVE_PROFILE" && "${HERE_I_AM_LEGACY_DOCKER:-false}" != true ]]; then
+  exec /bin/bash "$(cd "$(dirname "$0")" && pwd)/start_native.sh"
+fi
+
 SOURCE_DIR="${HERE_I_AM_SOURCE_DIR:-/Volumes/Personal/here-i-am-mvp}"
 DATA_DIR="${HERE_I_AM_DATA_DIR:-/Volumes/Personal/here-i-am}"
 BUILD_DIR="${HERE_I_AM_BUILD_DIR:-/tmp/here-i-am-mvp-build}"

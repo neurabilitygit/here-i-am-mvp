@@ -17,7 +17,7 @@ services:
       LOGS_DIR: /data/appdata/logs
       TMP_DIR: /data/appdata/tmp
       JOBS_DIR: /data/appdata/jobs
-      LOCKS_DIR: /data/appdata/locks
+      LOCKS_DIR: /tmp/here-i-am-locks
       EXPORTS_DIR: /data/appdata/exports
       BACKUP_ROOT: ${BACKUP_ROOT:-/data/appdata/backups}
       ARCHIVE_DIR: /data/library/archive
@@ -40,7 +40,10 @@ services:
       OLLAMA_CHAT_MODEL: gemma4:e4b
       OLLAMA_ANALYSIS_MODEL: gemma4:e4b
       OLLAMA_EMBEDDING_MODEL: embeddinggemma
-      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-2m}
+      OLLAMA_EMBEDDING_KEEP_ALIVE: ${OLLAMA_EMBEDDING_KEEP_ALIVE:-5m}
+      OLLAMA_CHAT_CONTEXT_TOKENS: ${OLLAMA_CHAT_CONTEXT_TOKENS:-4096}
+      OLLAMA_ANALYSIS_CONTEXT_TOKENS: ${OLLAMA_ANALYSIS_CONTEXT_TOKENS:-8192}
       OLLAMA_CHAT_MAX_TOKENS: 640
       OLLAMA_ANALYSIS_MAX_TOKENS: 3072
       TEXT_PROVIDER: ${TEXT_PROVIDER:-local}

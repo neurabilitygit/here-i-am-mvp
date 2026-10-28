@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,24 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def restore_file(source: Path, destination: Path, *, expected_bytes: int, expected_sha256: str) -> None:
+    """Restore portable file attributes, not filesystem-specific macOS flags.
+
+    copy2/copy-stat can raise EINVAL when chflags crosses from the Mac to ExFAT,
+    even though the file contents were copied. Permissions and timestamps are
+    portable here; Finder flags/xattrs are not part of the backup manifest.
+    Do not suppress copy, permission, full-disk, or integrity errors.
+    """
+    source_stat = source.stat()
+    shutil.copyfile(source, destination)
+    shutil.copymode(source, destination)
+    os.utime(destination, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+    with destination.open('rb') as handle:
+        os.fsync(handle.fileno())
+    if destination.stat().st_size != expected_bytes or digest(destination) != expected_sha256:
+        raise RuntimeError(f'Restored file verification failed: {destination.name}')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('backup', type=Path)
@@ -26,11 +45,27 @@ def main() -> int:
 
     manifest_path = args.backup / 'manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    records = manifest.get('files', [])
+    if not isinstance(records, list) or not records:
+        raise SystemExit('Backup must contain a nonempty file manifest')
+    seen_paths = set()
+    backup_root = args.backup.resolve()
     for record in manifest.get('files', []):
+        value = record.get('path')
+        if not isinstance(value, str) or not value or '\\' in value:
+            raise SystemExit('Invalid backup file path')
+        relative = Path(value)
+        if relative.is_absolute() or '..' in relative.parts or value in seen_paths:
+            raise SystemExit('Unsafe or duplicate backup file path')
+        seen_paths.add(value)
         source = args.backup / record['path']
+        if not source.resolve().is_relative_to(backup_root) or source.is_symlink():
+            raise SystemExit('Backup file escapes the backup directory')
         if not source.is_file() or source.stat().st_size != record['bytes'] or digest(source) != record['sha256']:
             raise SystemExit(f"Backup verification failed: {record['path']}")
     vector_export = args.backup / 'appdata' / 'chroma-export.jsonl'
+    if vector_export.exists() and 'appdata/chroma-export.jsonl' not in seen_paths:
+        raise SystemExit('Vector export is missing from the verified file manifest')
     descriptors = manifest.get('chroma_collections')
     if descriptors is None:
         descriptors = [{'name': manifest.get('chroma_collection', 'here_i_am_chunks'), 'metadata': None}]
@@ -67,7 +102,7 @@ def main() -> int:
             continue
         destination = args.data_root / record['path']
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        restore_file(source, destination, expected_bytes=record['bytes'], expected_sha256=record['sha256'])
 
     if vector_export.exists():
         import chromadb

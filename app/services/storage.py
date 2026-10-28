@@ -123,6 +123,7 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
 
 def atomic_write_text(path: Path, text: str) -> None:
     retry_filesystem(lambda: _atomic_write_text_once(path, text))
+    verify_saved_contents(path, text.encode('utf-8'))
 
 
 def _atomic_write_text_once(path: Path, text: str) -> None:
@@ -150,6 +151,14 @@ def _atomic_write_text_once(path: Path, text: str) -> None:
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
     retry_filesystem(lambda: _atomic_write_bytes_once(path, payload))
+    verify_saved_contents(path, payload)
+
+
+def verify_saved_contents(path: Path, payload: bytes) -> None:
+    def verify():
+        if path.read_bytes() != payload:
+            raise OSError(errno.EIO, 'Saved file contents could not be verified')
+    retry_filesystem(verify, missing_ok_to_retry=True)
 
 
 def _atomic_write_bytes_once(path: Path, payload: bytes) -> None:
