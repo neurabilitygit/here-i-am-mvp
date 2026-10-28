@@ -5,7 +5,7 @@ from pathlib import Path
 from config import settings
 from models.schemas import ExperiencePreferences
 from services.fidelity import build_speaker_fingerprint, save_answer_feedback
-from services.pipeline import PreparedAnswer, benchmark_question, direct_evidence_text, ground_personal_answer, is_broad_personal_synthesis, lexical_personal_context, personal_evidence_is_sufficient, personal_retrieval_plan, route_question_without_model, voice_profile_text
+from services.pipeline import PreparedAnswer, UNRELIABLE_MEMORY_ANSWER, benchmark_question, direct_evidence_text, ground_personal_answer, is_broad_personal_synthesis, lexical_personal_context, personal_evidence_is_sufficient, personal_retrieval_plan, route_question_without_model, voice_profile_text
 from services.preferences import cloud_api_key, load_preferences, save_preferences, set_runtime_cloud_key
 from services.providers import GenerationResult, LocalProvider, OpenAIProvider, provider_for, public_provider_error, validate_provider_selection
 from services.storage import create_session_dir, session_paths, update_processing_state
@@ -175,6 +175,8 @@ def test_supported_personal_question_still_builds_grounded_prompt(monkeypatch):
     assert prepared.direct_answer is None
     assert 'recorded individual' in prepared.prompt
     assert 'never to the AI model' in prepared.prompt
+    assert 'their identity and relationship to the recorded individual are unknown' in prepared.prompt
+    assert 'Never retell those memories as “you had” or “your family”' in prepared.prompt
     assert prepared.prompt.index('QUESTION') < prepared.prompt.index('SPEAKER_FINGERPRINT')
 
 
@@ -195,8 +197,12 @@ def test_direct_personal_fact_prompt_rejects_unrelated_anecdotes(monkeypatch):
 
     prepared = prepare_answer('Are you married?')
 
-    assert 'exactly one sentence' in prepared.prompt
-    assert 'beginning with Yes or No' in prepared.prompt
+    assert 'targeting 80 to 120 words' in prepared.prompt
+    assert 'not a one-sentence limit' in prepared.prompt
+    assert 'never pad or invent detail' in prepared.prompt
+
+    brief = prepare_answer('Are you married? Give a short answer.')
+    assert 'explicitly asks for brevity' in brief.prompt
 
 
 def test_memory_text_is_serialized_as_data_not_a_prompt_section(monkeypatch):
@@ -232,7 +238,7 @@ def test_grounding_guard_rejects_model_identity_and_unsupported_specifics():
         prepared,
         'I am a language model created by OpenAI in 2024.',
     )
-    assert answer == "I don't know the answer based on what I've recorded."
+    assert answer == UNRELIABLE_MEMORY_ANSWER
     assert supported is False
     assert 'model_identity' in reasons
     assert 'unsupported_number:2024' in reasons
@@ -286,8 +292,49 @@ def test_benchmark_answers_use_the_same_grounding_guard(monkeypatch):
     response = benchmark_question(prepared.question)
 
     assert all(
-        result.answer == "I don't know the answer based on what I've recorded."
+        result.answer == UNRELIABLE_MEMORY_ANSWER
         for result in response.results
+    )
+
+
+@pytest.mark.parametrize('answer,passed', [
+    ('Regarding Gabby, I remember that he belonged to my aunt and uncle.', True),
+    ('Well, Gabby belonged to my aunt and uncle.', True),
+    ('Yes, I had a dog named Gabby.', True),
+    ('Regarding Zorblax, I remember that he belonged to my aunt and uncle.', False),
+    ('You had a dog named Gabby.', False),
+    ('Gabby belonged to your aunt and uncle.', False),
+    ('I had a dog named Gabby, you know.', True),
+    ('I remember saying, “You had a dog named Gabby.”', True),
+])
+def test_pet_answer_guard_distinguishes_discourse_names_and_the_unknown_visitor(answer, passed):
+    prepared = PreparedAnswer(
+        question='Did you have any pets?', prompt='', mode='PERSONAL', sources=[], retrieval_seconds=0,
+        evidence_text='I had a dog named Gabby. He belonged to my aunt and uncle.',
+    )
+    result, check_passed, reasons = ground_personal_answer(prepared, answer)
+    assert check_passed is passed
+    if passed:
+        assert result == answer
+    else:
+        assert result == UNRELIABLE_MEMORY_ANSWER
+        assert reasons
+        assert "don't know" not in result
+
+
+def test_pets_query_finds_dog_and_cat_memories_without_the_literal_word_pets():
+    query, terms, phrases = personal_retrieval_plan('Did you have any pets?')
+    assert {'dog', 'cat'} <= terms
+    assert 'my dog' in phrases and 'my cat' in phrases
+    assert 'dogs cats' in query
+    assert personal_evidence_is_sufficient(
+        'Did you have any pets?', ['I have a dog who brings me joy.'], [{}], [-5],
+    )
+    assert not personal_evidence_is_sufficient(
+        'Did you have any pets?', ['My neighbor owns a shop.'], [{}], [0.7],
+    )
+    assert not personal_evidence_is_sufficient(
+        'Did you have a pet cat?', ['I have a dog who brings me joy.'], [{}], [-5],
     )
 
 

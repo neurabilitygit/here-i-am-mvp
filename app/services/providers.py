@@ -239,7 +239,7 @@ def record_stream_audit(
         'input_tokens': usage.get('input_tokens'),
         'output_tokens': usage.get('output_tokens'),
         'grounding_check_passed': grounding_check_passed,
-        'grounding_check_kind': 'deterministic_heuristic_v2',
+        'grounding_check_kind': 'deterministic_heuristic_v3',
         'grounding_reasons': (grounding_reasons or [])[:10],
     })
 

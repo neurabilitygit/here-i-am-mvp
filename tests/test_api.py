@@ -194,7 +194,7 @@ def test_stream_sends_heartbeat_while_provider_is_working(monkeypatch):
 
 
 def test_personal_stream_never_exposes_rejected_tokens(monkeypatch):
-    from services.pipeline import PreparedAnswer
+    from services.pipeline import PreparedAnswer, UNRELIABLE_MEMORY_ANSWER
     class Provider:
         name = 'local'
 
@@ -213,7 +213,7 @@ def test_personal_stream_never_exposes_rejected_tokens(monkeypatch):
     response = client.post('/api/chat/stream', json={'question': 'Tell me about childhood.'})
     assert response.status_code == 200
     assert 'Boston' not in response.text
-    assert "I don't know the answer based on what I've recorded." in response.text
+    assert UNRELIABLE_MEMORY_ANSWER in response.text
     assert audit['grounding_check_passed'] is False
     assert 'grounding_supported' not in audit
 
