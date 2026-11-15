@@ -1,4 +1,5 @@
 import json
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,7 @@ TEST_PASSPHRASE = 'correct horse battery staple'
 
 
 def _configure_auth(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, 'auth_disabled', False)
     hash_path = tmp_path / 'auth_passphrase_hash.json'
     hash_path.write_text(json.dumps(auth.hash_passphrase(TEST_PASSPHRASE)), encoding='utf-8')
     monkeypatch.setattr(settings, 'auth_passphrase_hash_file', str(hash_path))
@@ -22,7 +24,7 @@ def _configure_auth(tmp_path, monkeypatch):
     return TestClient(main.app)
 
 
-def test_auth_is_inactive_until_a_passphrase_is_configured():
+def test_auth_can_be_explicitly_disabled_for_isolated_tests():
     client = TestClient(main.app)
     assert client.get('/api/sessions').status_code == 200
     status = client.get('/api/auth/status')
@@ -33,6 +35,49 @@ def test_auth_is_inactive_until_a_passphrase_is_configured():
 def test_protected_route_rejects_missing_token(tmp_path, monkeypatch):
     client = _configure_auth(tmp_path, monkeypatch)
     assert client.get('/api/sessions').status_code == 401
+
+
+def test_auth_is_required_without_provisioning(monkeypatch):
+    monkeypatch.setattr(settings, 'auth_disabled', False)
+    monkeypatch.setattr(settings, 'auth_passphrase_hash_file', '')
+    client = TestClient(main.app)
+    assert client.get('/api/sessions').status_code == 503
+    assert client.get('/api/auth/status').json()['required'] is True
+    assert client.post('/api/auth/login', json={'passphrase': TEST_PASSPHRASE}).status_code == 401
+
+
+@pytest.mark.parametrize('failure', ['missing', 'unreadable', 'json', 'schema', 'encoding'])
+@pytest.mark.parametrize('authenticated', [False, True])
+def test_credential_failure_denies_access_and_recovers(tmp_path, monkeypatch, failure, authenticated):
+    client = _configure_auth(tmp_path, monkeypatch)
+    if authenticated:
+        assert client.post('/api/auth/login', json={'passphrase': TEST_PASSPHRASE}).status_code == 200
+    hash_path = Path(settings.auth_passphrase_hash_file)
+    original = hash_path.read_bytes()
+    read_text = Path.read_text
+    with monkeypatch.context() as patch:
+        if failure == 'missing':
+            hash_path.unlink()
+        elif failure == 'unreadable':
+            def deny(path, *args, **kwargs):
+                if path == hash_path:
+                    raise PermissionError('isolated simulated permission failure')
+                return read_text(path, *args, **kwargs)
+            patch.setattr(Path, 'read_text', deny)
+        else:
+            hash_path.write_bytes({'json': b'{', 'schema': b'[]', 'encoding': b'\xff'}[failure])
+        assert client.get('/api/sessions').status_code == 503
+        assert client.post('/api/chat', json={}).status_code == 503
+        assert client.get('/api/auth/status').json() == {'authenticated': False, 'required': True}
+        assert client.post('/api/auth/login', json={'passphrase': TEST_PASSPHRASE}).status_code == 401
+        assert client.get('/').status_code == 200
+    hash_path.write_bytes(original)
+    assert client.get('/api/sessions').status_code == (200 if authenticated else 401)
+
+
+def test_auth_default_is_enabled():
+    from config import Settings
+    assert Settings.model_fields['auth_disabled'].default is False
 
 
 def test_protected_route_rejects_invalid_token(tmp_path, monkeypatch):

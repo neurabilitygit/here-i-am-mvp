@@ -18,6 +18,14 @@ See [Architecture](docs/ARCHITECTURE.md), [Data contracts](docs/DATA_CONTRACTS.m
 
 ## Safe local workflow
 
+Authentication is required by default, including before a passphrase is
+provisioned. If its credential file becomes missing, unreadable, or invalid,
+protected routes return HTTP 503 until the file is restored; existing cookies
+do not bypass this check. Provision credentials with `scripts/set_passphrase.py`.
+`AUTH_DISABLED=true` is an explicit opt-out for isolated development/tests only;
+never enable it for a deployment containing personal data. The test suite sets
+this option in its own process and enables authentication for security tests.
+
 On the configured Mac, the launcher uses the verified immutable native release
 selected by the private production profile. It does not build from uncommitted files:
 

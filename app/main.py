@@ -127,7 +127,9 @@ async def request_observability(request: Request, call_next):
         or request.url.path in {'/api/auth/login', '/api/auth/logout'}
     )
     session_token = request.cookies.get(SESSION_COOKIE_NAME, '')
-    if requires_auth(request.method, request.url.path) and not validate_token(session_token):
+    if requires_auth(request.method, request.url.path) and not passphrase_configured():
+        response = JSONResponse(status_code=503, content={'detail': 'Authentication is unavailable'})
+    elif requires_auth(request.method, request.url.path) and not validate_token(session_token):
         response = JSONResponse(status_code=401, content={'detail': 'Authentication required'})
     elif request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and origin and origin not in settings.cors_origin_list:
         response = JSONResponse(status_code=403, content={'detail': 'Cross-origin changes are not allowed'})
@@ -200,8 +202,8 @@ def login(payload: AuthLoginRequest, response: Response):
 @app.get('/api/auth/status', response_model=AuthStatus)
 def auth_status(request: Request):
     return AuthStatus(
-        authenticated=validate_token(request.cookies.get(SESSION_COOKIE_NAME, '')),
-        required=passphrase_configured(),
+        authenticated=passphrase_configured() and validate_token(request.cookies.get(SESSION_COOKIE_NAME, '')),
+        required=not settings.auth_disabled,
     )
 
 

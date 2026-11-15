@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # default deliberately makes direct, unconfigured bridge mutations fail.
     local_bridge_token: str = ''
     auth_passphrase_hash_file: str = ''
+    auth_disabled: bool = False  # Explicit opt-out for isolated development/tests only.
     auth_tokens_path: str = '/data/appdata/auth_tokens.json'
     auth_token_ttl_seconds: int = 2_592_000
     auth_max_failed_attempts: int = 10

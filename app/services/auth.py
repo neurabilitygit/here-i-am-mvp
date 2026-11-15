@@ -48,14 +48,8 @@ def is_path_exempt(method: str, path: str) -> bool:
 
 
 def requires_auth(method: str, path: str) -> bool:
-    # The gate only activates once an operator has provisioned a passphrase
-    # (scripts/set_passphrase.py). scripts/start.sh refuses to launch the
-    # real deployment without one, so this stays fail-closed in production;
-    # locally/in CI, where no passphrase is configured, the app behaves as
-    # it did before auth existed rather than becoming permanently unusable.
-    if not passphrase_configured():
-        return False
-    return not is_path_exempt(method, path)
+    # Credential availability must never decide whether the gate is enabled.
+    return not settings.auth_disabled and not is_path_exempt(method, path)
 
 
 def _hash_passphrase(passphrase: str, salt: bytes, iterations: int) -> bytes:
@@ -78,8 +72,16 @@ def _load_passphrase_record() -> dict | None:
     if not path:
         return None
     try:
-        return json.loads(Path(path).read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
+        record = json.loads(Path(path).read_text(encoding='utf-8'))
+        if not isinstance(record, dict) or record.get('algorithm') != 'pbkdf2_sha256':
+            raise ValueError('Invalid credential record')
+        iterations = record['iterations']
+        if type(iterations) is not int or not 1 <= iterations <= 10_000_000:
+            raise ValueError('Invalid iteration count')
+        if len(bytes.fromhex(record['salt'])) != 16 or len(bytes.fromhex(record['hash'])) != 32:
+            raise ValueError('Invalid credential size')
+        return record
+    except (OSError, ValueError, TypeError, KeyError):
         logger.error('configured auth passphrase hash file is unavailable or invalid')
         return None
 

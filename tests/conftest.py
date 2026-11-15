@@ -7,6 +7,7 @@ TEST_ROOT = Path(tempfile.mkdtemp(prefix='here-i-am-tests-'))
 LOCK_ROOT = Path(tempfile.mkdtemp(prefix='here-i-am-test-locks-', dir='/tmp'))
 os.environ.update(
     {
+        'AUTH_DISABLED': 'true',  # Only this isolated test process bypasses auth.
         'DATA_ROOT': str(TEST_ROOT),
         'SESSIONS_DIR': str(TEST_ROOT / 'library' / 'sessions'),
         'CHROMA_DIR': str(TEST_ROOT / 'appdata' / 'chroma'),
