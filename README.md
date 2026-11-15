@@ -1,6 +1,10 @@
 # Here I Am
 
-A local-first autobiography system for recording, transcribing, structuring, retrieving, and exploring a personal archive through an animated “Living Portrait.” Ollama and optional cloned-voice synthesis run natively on macOS; the FastAPI application runs in Docker; durable data remains under `/Volumes/Personal/here-i-am`.
+A local-first autobiography system for recording, transcribing, structuring, retrieving, and exploring a personal archive through an animated “Living Portrait.” The production FastAPI application, Chroma, Ollama, and cloned-voice synthesis now run natively on macOS. Durable data remains under `/Volumes/Personal/here-i-am` on the existing ExFAT drive; no filesystem migration was performed.
+
+The 2026-10-27 Docker-to-native cutover is documented in
+[Native migration](docs/NATIVE_MIGRATION_2026-10-27.md). Docker remains available
+for isolated tests and the previous production container is retained, stopped.
 
 ## Current architecture
 
@@ -14,13 +18,25 @@ See [Architecture](docs/ARCHITECTURE.md), [Data contracts](docs/DATA_CONTRACTS.m
 
 ## Safe local workflow
 
-The external drive produces AppleDouble files that Docker cannot always read. Build from a clean local snapshot:
+Authentication is required by default, including before a passphrase is
+provisioned. If its credential file becomes missing, unreadable, or invalid,
+protected routes return HTTP 503 until the file is restored; existing cookies
+do not bypass this check. Provision credentials with `scripts/set_passphrase.py`.
+`AUTH_DISABLED=true` is an explicit opt-out for isolated development/tests only;
+never enable it for a deployment containing personal data. The test suite sets
+this option in its own process and enables authentication for security tests.
+
+On the configured Mac, the launcher uses the verified immutable native release
+selected by the private production profile. It does not build from uncommitted files:
 
 ```bash
 ./scripts/start.sh
 ```
 
-Then open `http://localhost:8787`. This mounts the existing data directory; it does not migrate or delete it.
+Then open `http://localhost:8787` or the private HTTPS address printed by the
+launcher. The desktop `start-here-i-am.command` and `Here I Am.app` use the same
+native deployment. This retains the existing data directory; it does not move
+or delete it. See Operations before setting up another computer.
 
 For tests, build without mounting personal data:
 

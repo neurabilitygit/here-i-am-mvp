@@ -35,6 +35,19 @@ test('primary controls remain interactive in WebKit', async ({page}) => {
   await expect(page.locator('#chat-question')).toBeFocused();
 });
 
+test('voice reports the real local workload conflict and preserves the answer', async ({page}) => {
+  const detail = 'This Mac is already preparing a local answer, voice, or memories.';
+  await page.route('**/api/chat/stream', (route) => route.fulfill({contentType:'text/event-stream', body:sse('A written memory remains available.')}));
+  await page.route('**/api/voice/speak', (route) => route.fulfill({status:409, contentType:'application/json', body:JSON.stringify({detail})}));
+  await page.locator('#chat-question').fill('A synthetic question');
+  await page.locator('#chat-send').click();
+  await expect(page.locator('#answer-text')).toHaveText('A written memory remains available.');
+  await page.locator('#speak-answer').click();
+  await expect(page.locator('#presence-status')).toContainText(detail);
+  await expect(page.locator('#answer-text')).toHaveText('A written memory remains available.');
+  await expect(page.locator('#stop-speaking')).toBeHidden();
+});
+
 test('an old voice request cannot take over a newer answer', async ({page}) => {
   let questionNumber = 0;
   await page.route('**/api/chat/stream', async (route) => {

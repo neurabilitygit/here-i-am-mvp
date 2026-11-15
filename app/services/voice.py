@@ -12,6 +12,7 @@ import requests
 from config import settings
 from models.schemas import VoiceCandidate, VoicePrepareRequest, VoiceStatus
 from services.storage import atomic_write_text, list_session_dirs, safe_session_dir, session_paths
+from services.local_workloads import LocalWorkloadBusy, exclusive_local_workload
 
 
 STATUS_PATH = Path(settings.voice_dir) / 'voice_status.json'
@@ -127,6 +128,7 @@ def _save_status(status: VoiceStatus, extra: dict | None = None) -> None:
     atomic_write_text(STATUS_PATH, json.dumps(value, ensure_ascii=False, indent=2))
 
 
+@exclusive_local_workload('voice-reference')
 def prepare_voice_reference(request: VoicePrepareRequest) -> VoiceStatus:
     if not request.confirm_voice_rights:
         raise ValueError('Voice rights confirmation is required')
@@ -154,9 +156,13 @@ def prepare_voice_reference(request: VoicePrepareRequest) -> VoiceStatus:
         raise RuntimeError('Reference audio preparation failed')
     reference_text = ''
     try:
-        from services.pipeline import whisper_model
-        segments, _info = whisper_model().transcribe(str(REFERENCE_PATH), vad_filter=True)
-        reference_text = ' '.join(segment.text.strip() for segment in segments).strip()
+        from services.pipeline import local_transcription_model
+        with local_transcription_model() as model:
+            segments, _info = model.transcribe(str(REFERENCE_PATH), vad_filter=True)
+            reference_text = ' '.join(segment.text.strip() for segment in segments).strip()
+        del model
+    except LocalWorkloadBusy:
+        raise
     except Exception:
         # The local bridge can fall back to speaker-embedding-only cloning.
         reference_text = ''
@@ -296,6 +302,11 @@ def synthesize(text: str, speed: float = 1.0, request_id: str = '') -> tuple[byt
         response.raise_for_status()
         return response.content, 'audio/mpeg', provider
 
+    return _synthesize_local(text, speed, request_id)
+
+
+@exclusive_local_workload('voice')
+def _synthesize_local(text: str, speed: float, request_id: str) -> tuple[bytes, str, str]:
     _release_local_chat_model()
     host_reference = str(Path(settings.voice_host_data_root) / 'appdata' / 'voice' / REFERENCE_PATH.name)
     response = requests.post(
@@ -327,7 +338,7 @@ def synthesize(text: str, speed: float = 1.0, request_id: str = '') -> tuple[byt
         response.headers.get('X-Voice-Audio-Seconds', ''),
         response.headers.get('X-Voice-Real-Time-Factor', ''),
     )
-    return response.content, response.headers.get('content-type', 'audio/wav'), provider
+    return response.content, response.headers.get('content-type', 'audio/wav'), 'local'
 
 
 def _release_local_chat_model() -> None:
@@ -341,17 +352,24 @@ def _release_local_chat_model() -> None:
             f'{settings.ollama_base_url.rstrip("/")}/api/ps',
             timeout=2,
         )
+    except requests.Timeout as exc:
+        raise RuntimeError('Local language-model memory status timed out. Try again shortly.') from exc
+    except requests.ConnectionError:
+        # Voice can run when the optional Ollama service is stopped.
+        return
+    try:
         running.raise_for_status()
-        loaded_names = {item.get('name', '').split(':')[0] for item in running.json().get('models', [])}
-        if settings.ollama_chat_model.split(':')[0] not in loaded_names:
-            return
-        requests.post(
-            f'{settings.ollama_base_url.rstrip("/")}/api/generate',
-            json={'model': settings.ollama_chat_model, 'keep_alive': 0},
-            timeout=8,
-        )
-    except requests.RequestException:
-        pass
+        loaded_names = {item.get('name', '').removesuffix(':latest') for item in running.json().get('models', [])}
+        for model in {settings.ollama_chat_model, settings.ollama_analysis_model}:
+            if model.removesuffix(':latest') in loaded_names:
+                released = requests.post(
+                    f'{settings.ollama_base_url.rstrip("/")}/api/generate',
+                    json={'model': model, 'keep_alive': 0},
+                    timeout=8,
+                )
+                released.raise_for_status()
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError('Local language-model memory could not be released safely. Try again shortly.') from exc
 
 
 def cancel_synthesis_stream(request_id: str) -> bool:

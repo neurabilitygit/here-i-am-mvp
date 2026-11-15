@@ -95,7 +95,16 @@ body[data-avatar-state="speaking"] .mouth-line { opacity: .35; }
 .talk-provider-badge { width: fit-content; margin: 0 0 .65rem auto; padding: .42rem .75rem; border: 1px solid rgba(143,224,177,.38); border-radius: 999px; color: #b7f0cc; background: rgba(40,131,86,.14); font-size: .82rem; font-weight: 780; letter-spacing: .01em; }.talk-provider-badge[data-provider="local"] { color: #d8ccff; border-color: rgba(169,139,255,.4); background: rgba(118,99,236,.14); }
 .answer-text { font-family: ui-serif, Georgia, serif; font-size: clamp(1.22rem, 2.2vw, 1.7rem); line-height: 1.62; letter-spacing: .005em; white-space: pre-wrap; }
 .answer-text::after { content: ""; display: inline-block; width: .5em; height: 1em; margin-left: .2em; vertical-align: -.1em; background: var(--aqua); animation: cursor-pulse .8s infinite; }
-.answer-card.complete .answer-text::after { display: none; }
+.answer-card.complete .answer-text::after, .answer-text:empty::after { display: none; }
+.chat-progress { display: flex; align-items: center; gap: 1rem; padding: .3rem 0 1rem; }
+.chat-progress strong { display: block; color: var(--aqua); font-size: 1.25rem; }
+.chat-progress p { margin: .45rem 0 0; color: var(--ink); font-size: 1rem; line-height: 1.45; }
+.chat-progress-dots { display: flex; flex: 0 0 auto; align-items: center; gap: .3rem; }
+.chat-progress-dots i { width: .6rem; height: .6rem; border-radius: 50%; background: var(--aqua); animation: thinking-dot 1.4s ease-in-out infinite; }
+.chat-progress-dots i:nth-child(2) { animation-delay: .18s; }
+.chat-progress-dots i:nth-child(3) { animation-delay: .36s; }
+@keyframes thinking-dot { 50% { opacity: .35; transform: translateY(-.2rem); } }
+@media (prefers-reduced-motion: reduce) { .chat-progress-dots i { animation: none; } }
 .answer-provenance { margin-top: 1rem; padding-top: .8rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
 .answer-provenance summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--ink); font-weight: 700; }
 .answer-provenance ul { margin: .5rem 0 0; padding-left: 1.25rem; }

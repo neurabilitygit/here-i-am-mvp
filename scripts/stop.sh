@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+NATIVE_PROFILE="${HERE_I_AM_DEPLOYMENT_PROFILE:-/Users/ericbass/Library/Application Support/Here-I-Am/native-production/production.json}"
+if [[ -f "$NATIVE_PROFILE" && "${HERE_I_AM_LEGACY_DOCKER:-false}" != true ]]; then
+  NATIVE_PYTHON="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["backend_python"])' "$NATIVE_PROFILE")"
+  NATIVE_SOURCE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_root"])' "$NATIVE_PROFILE")"
+  exec "$NATIVE_PYTHON" "$NATIVE_SOURCE/scripts/native_deployment.py" stop --profile "$NATIVE_PROFILE"
+fi
+
 DATA_DIR="${HERE_I_AM_DATA_DIR:-/Volumes/Personal/here-i-am}"
 BUILD_DIR="${HERE_I_AM_BUILD_DIR:-/tmp/here-i-am-mvp-build}"
 RUN_DIR="$DATA_DIR/run"

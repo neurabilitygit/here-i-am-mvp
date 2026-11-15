@@ -68,6 +68,10 @@
         </section>
         <div id="talk-provider-badge" class="talk-provider-badge" role="status" aria-label="Selected answer engine">Best answer · OpenAI</div>
         <div id="answer-card" class="answer-card" hidden>
+          <div id="chat-progress" class="chat-progress" role="status" aria-live="polite" aria-atomic="true" hidden>
+            <span class="chat-progress-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <div><strong id="chat-progress-title"></strong><p id="chat-progress-detail"></p></div>
+          </div>
           <div id="answer-text" class="answer-text"></div>
           <details id="answer-provenance" class="answer-provenance" hidden><summary>Why this answer?</summary><p>This answer used these recorded memories:</p><ul id="answer-provenance-list"></ul></details>
           <p id="answer-announcement" class="sr-only" role="status" aria-live="polite"></p>

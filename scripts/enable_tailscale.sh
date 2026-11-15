@@ -44,5 +44,5 @@ Here I Am is reachable from devices signed into your tailnet at:
   https://$DNS_NAME
 
 Open that URL on your iPhone while Tailscale is connected, then log in with
-the Here I Am passphrase. Docker remains bound to this Mac's loopback address.
+the Here I Am passphrase. The application remains bound to this Mac's loopback address.
 EOF

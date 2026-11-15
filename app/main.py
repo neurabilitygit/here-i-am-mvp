@@ -29,6 +29,7 @@ from starlette.background import BackgroundTask
 
 from config import settings
 from services.storage import verify_saved_file
+from services.local_workloads import LocalWorkloadBusy
 from models.schemas import AnswerFeedback, AuthLoginRequest, AuthStatus, AvatarGenerationRequest, AvatarJobResponse, ChatBenchmarkResponse, ChatRequest, ChatResponse, ClientActivityEvent, GenericStatus, PreferencesUpdate, ProviderStatus, PromptOfTheDay, QuizPrompt, RecordingUploadResponse, ReconciliationReport, SealRequest, SessionDetail, SessionSummary, SpeakerAssignmentsUpdate, SpeakerCreate, SpeakerProfile, TranscriptUpdate, TTSRequest, VoicePrepareRequest, VoiceStatus
 from services.prompts import prompt_of_the_day
 from services.auth import SESSION_COOKIE_NAME, is_locked_out, issue_token, passphrase_configured, register_failure, register_success, requires_auth, revoke_token, validate_token, verify_passphrase
@@ -53,11 +54,14 @@ async def lifespan(_app: FastAPI):
     if ollama_client.is_reachable():
         preferences = load_preferences()
         def prepare_ollama():
-            if preferences.provider == 'local':
-                ollama_client.preload()
-            else:
-                ollama_client.unload_chat()
-            ollama_client.unload_embeddings()
+            try:
+                if preferences.provider == 'local':
+                    ollama_client.preload()
+                else:
+                    ollama_client.unload_chat()
+                # Embeddings warm on demand, avoiding a startup race with chat.
+            except Exception:
+                logger.info('Optional local startup warmup skipped')
         threading.Thread(target=prepare_ollama, name='ollama-preload', daemon=True).start()
     yield
 
@@ -84,6 +88,11 @@ _chat_stream_lock = threading.Lock()
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / 'templates'))
 app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'static')), name='static')
+
+
+@app.exception_handler(LocalWorkloadBusy)
+async def local_workload_busy(_request: Request, exc: LocalWorkloadBusy):
+    return JSONResponse(status_code=409, content={'detail': str(exc)})
 
 
 def protected_library_mutation():
@@ -118,7 +127,9 @@ async def request_observability(request: Request, call_next):
         or request.url.path in {'/api/auth/login', '/api/auth/logout'}
     )
     session_token = request.cookies.get(SESSION_COOKIE_NAME, '')
-    if requires_auth(request.method, request.url.path) and not validate_token(session_token):
+    if requires_auth(request.method, request.url.path) and not passphrase_configured():
+        response = JSONResponse(status_code=503, content={'detail': 'Authentication is unavailable'})
+    elif requires_auth(request.method, request.url.path) and not validate_token(session_token):
         response = JSONResponse(status_code=401, content={'detail': 'Authentication required'})
     elif request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and origin and origin not in settings.cors_origin_list:
         response = JSONResponse(status_code=403, content={'detail': 'Cross-origin changes are not allowed'})
@@ -191,8 +202,8 @@ def login(payload: AuthLoginRequest, response: Response):
 @app.get('/api/auth/status', response_model=AuthStatus)
 def auth_status(request: Request):
     return AuthStatus(
-        authenticated=validate_token(request.cookies.get(SESSION_COOKIE_NAME, '')),
-        required=passphrase_configured(),
+        authenticated=passphrase_configured() and validate_token(request.cookies.get(SESSION_COOKIE_NAME, '')),
+        required=not settings.auth_disabled,
     )
 
 
@@ -741,6 +752,8 @@ def chat(payload: ChatRequest):
     start = time.time()
     try:
         answer = answer_question(payload.question.strip())
+    except LocalWorkloadBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception('chat failed')
         record_generation_failure(status['active'], status.get('cloud_model') or status.get('local_model', ''), time.time() - start, exc)
@@ -902,6 +915,8 @@ def prepare_voice(payload: VoicePrepareRequest, _library_guard: None = Depends(p
         raise HTTPException(status_code=400, detail='Choose a recording before creating your AI voice')
     try:
         return prepare_voice_reference(payload)
+    except LocalWorkloadBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

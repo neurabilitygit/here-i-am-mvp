@@ -273,6 +273,7 @@ function restoreCompletedAnswer() {
   let saved;
   try { saved = JSON.parse(sessionStorage.getItem(ANSWER_STORAGE_KEY) || 'null'); } catch (_) { saved = null; }
   if (!saved?.answer || typeof saved.answer !== 'string') return false;
+  clearChatProgress();
   state.lastAnswer = saved.answer.slice(0, 40000);
   state.lastMode = typeof saved.mode === 'string' ? saved.mode : '';
   state.lastProvider = typeof saved.provider === 'string' ? saved.provider : '';
@@ -483,11 +484,33 @@ function renderAnswerProvenance(){
   list.replaceChildren(...unique.map((source)=>{const item=document.createElement('li');item.textContent=source.title||formatMemoryDate(source.session_id)||'Recorded memory';return item;}));
 }
 
+function showChatProgress(title, detail) {
+  byId('chat-progress').hidden = false;
+  // Avoid repeated live-region announcements for every streamed token.
+  if (byId('chat-progress-title').textContent !== title) byId('chat-progress-title').textContent = title;
+  if (byId('chat-progress-detail').textContent !== detail) byId('chat-progress-detail').textContent = detail;
+}
+
+function clearChatProgress() {
+  window.clearTimeout(state.chatThinkingTimer);
+  state.chatThinkingTimer = null;
+  byId('chat-progress').hidden = true;
+  byId('answer-text').setAttribute('aria-busy', 'false');
+}
+
+function markAnswerArriving() {
+  if (!state.lastAnswer.trim()) return;
+  window.clearTimeout(state.chatThinkingTimer);
+  state.chatThinkingTimer = null;
+  showChatProgress('Writing your answer…', 'Your answer is appearing below.');
+}
+
 function setChatBusy(busy){
   byId('chat-send').disabled=busy;
   byId('voice-question').disabled=busy;
   document.querySelectorAll('#suggestions button:not(#quiz-open)').forEach((button)=>{button.disabled=busy;});
   byId('chat-question').setAttribute('aria-busy',String(busy));
+  byId('answer-text').setAttribute('aria-busy',String(busy));
 }
 
 async function askQuestion(question) {
@@ -514,11 +537,19 @@ async function askQuestion(question) {
   byId('answer-card').hidden = false;
   byId('answer-card').classList.remove('complete');
   byId('answer-text').textContent = '';
+  clearChatProgress();
+  showChatProgress('Thinking…', 'Your question was received. You can cancel with ×.');
+  byId('answer-card').scrollTop = 0;
+  state.chatThinkingTimer = window.setTimeout(() => {
+    if (generation === state.chatGeneration && state.chatAbort && !state.lastAnswer.trim()) {
+      showChatProgress('Still thinking…', 'Your answer is still being prepared. You can cancel with ×.');
+    }
+  }, 15000);
   byId('answer-announcement').textContent = '';
   byId('feedback-up').classList.remove('selected');
   byId('speak-answer').disabled = true;
   byId('compare-answer').disabled = true;
-  setPresence('Finding the right memories…', 'thinking');
+  setPresence('Thinking…', 'thinking');
   setChatBusy(true);
   let buffer = '';
   try {
@@ -547,6 +578,14 @@ async function askQuestion(question) {
           state.lastSources = Array.isArray(parsed.data.sources) ? parsed.data.sources : [];
           renderAnswerProvenance();
           renderTalkProviderBadge(parsed.data.provider);
+          if (!state.lastAnswer.trim()) {
+            showChatProgress(
+              performance.now() - startedAt >= 15000 ? 'Still thinking…' : 'Thinking…',
+              parsed.data.mode === 'GENERAL'
+                ? 'Preparing your answer. You can cancel with ×.'
+                : 'Reviewing your recorded memories. You can cancel with ×.',
+            );
+          }
           setPresence(
             parsed.data.provider === 'memory'
               ? 'No matching memory was found'
@@ -556,14 +595,17 @@ async function askQuestion(question) {
         } else if (parsed.event === 'token') {
           state.lastAnswer += parsed.data.text;
           byId('answer-text').textContent = state.lastAnswer;
+          markAnswerArriving();
           setPresence('Answering…', 'speaking');
         } else if (parsed.event === 'replace') {
           state.lastAnswer=parsed.data.text||'';
           byId('answer-text').textContent=state.lastAnswer;
+          markAnswerArriving();
           activity('answer_grounding_replaced',{reason:parsed.data.reason||'grounding'});
         } else if (parsed.event === 'error') throw new Error(parsed.data.detail);
       }
     }
+    clearChatProgress();
     byId('answer-card').classList.add('complete');
     byId('answer-announcement').textContent = 'Answer ready. The written answer appears above the answer controls.';
     byId('compare-answer').disabled = !state.lastAnswer || !state.cloudConfigured || state.lastProvider === 'memory';
@@ -590,6 +632,7 @@ async function askQuestion(question) {
     }
   } finally {
     if (generation === state.chatGeneration) {
+      clearChatProgress();
       state.chatAbort = null;
       state.chatRequestId = null;
       setChatBusy(false);
@@ -602,6 +645,7 @@ function clearAnswer() {
   state.chatGeneration += 1;
   state.chatAbort?.abort();
   state.chatAbort = null;
+  clearChatProgress();
   cancelVoicePrerender();
   if (state.voicePreparing || state.voicePlaying) stopSpeaking();
   state.lastQuestion = '';
@@ -965,8 +1009,10 @@ async function speakAnswer() {
   try {
     const response = await fetch('/api/voice/speak', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:answerText, speed:1, request_id:requestId}), signal:state.voiceAbort.signal});
     notifyIfAuthRequired(response);
-    if (response.status === 409) throw new Error('A voice file is already being prepared. Please wait for it to finish.');
-    if (!response.ok) throw new Error((await response.json()).detail || 'Voice generation failed');
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Voice generation failed');
+    }
     if (state.voiceRequestId !== requestId || state.chatGeneration !== answerGeneration || state.lastAnswer !== answerText) {
       activity('voice_prepare_discarded', {request_id: requestId, reason: 'answer_changed', generation: answerGeneration});
       return;
