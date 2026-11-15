@@ -103,3 +103,29 @@ def test_metadata_json_schema_reaches_ollama_without_extra_generation(monkeypatc
     assert len(calls)==1
     assert calls[0]['format']==TranscriptMetadata.model_json_schema()
     assert calls[0]['options']['temperature']==0
+
+
+def test_query_embedding_cache_is_bounded_fresh_and_returns_copies(monkeypatch):
+    calls = []
+    clock = [100.0]
+    monkeypatch.setattr('services.ollama_client.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr('services.ollama_client.requests.post', lambda *a, **k: calls.append(k) or SyntheticResponse())
+    client = OllamaClient('http://local', 'chat', 'analysis', 'embed')
+    first = client.embed(['same question'])
+    first[0][0] = 99
+    assert client.embed(['same question']) == [[0.1, 0.2]]
+    assert len(calls) == 1
+    assert client.last_metrics('embedding')['cache_hit'] is True
+    clock[0] += 61
+    client.embed(['same question'])
+    assert len(calls) == 2
+    client.embedding_model = 'new-model'
+    client.embed(['same question'])
+    assert len(calls) == 3
+    for i in range(140):
+        client.embed([f'question {i}'])
+    assert len(client._query_embeddings) == 128
+    before = len(calls)
+    client.embed(['a', 'b'])
+    client.embed(['a', 'b'])
+    assert len(calls) == before + 2

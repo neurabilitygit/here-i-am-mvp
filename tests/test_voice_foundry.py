@@ -260,3 +260,31 @@ def test_voice_watchdog_tracks_stalled_progress_not_total_elapsed(monkeypatch):
     assert bridge.watchdog_failure(started=0, last_progress=27, now=36) == ''
     assert bridge.watchdog_failure(started=0, last_progress=20, now=31) == 'Voice preparation stopped making audio progress'
     assert bridge.watchdog_failure(started=0, last_progress=95, now=101) == 'Voice preparation exceeded the absolute local safety limit'
+
+
+def test_exact_speech_segments_reused_across_answers_with_voice_isolation(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge, 'ALLOWED_REFERENCE_ROOT', tmp_path.resolve())
+    monkeypatch.setattr(bridge, 'CACHE_DIR', str(tmp_path / 'cache'))
+    reference = tmp_path / 'reference.wav'
+    sf.write(reference, np.zeros(24000, dtype=np.float32), 24000)
+    calls = []
+    class Model:
+        sample_rate = 24000
+        def batch_generate(self, texts, **kwargs):
+            calls.extend(texts)
+            for i, text in enumerate(texts):
+                yield SimpleNamespace(audio=np.full(1200, .1, dtype=np.float32), sequence_idx=i, sample_rate=24000)
+    monkeypatch.setattr(bridge, 'load_model', lambda: Model())
+    monkeypatch.setattr(bridge, 'cached_reference_audio', lambda *a: object())
+    monkeypatch.setattr(bridge, 'sentence_segments', lambda text: text.split('|'))
+    request = bridge.SynthesisRequest(text='shared sentence|first ending', reference_audio=str(reference), reference_text='same voice')
+    bridge.synthesize(request)
+    calls.clear()
+    result = bridge.synthesize(request.model_copy(update={'text': 'shared sentence|new ending'}))
+    assert calls == ['new ending']
+    assert result.headers['x-voice-segments-resumed'] == '1'
+    calls.clear()
+    bridge.synthesize(request.model_copy(update={'text': 'shared sentence|third ending', 'reference_text': 'changed voice'}))
+    assert set(calls) == {'shared sentence', 'third ending'}
+    bridge.clear_cache()
+    assert not list((tmp_path / 'cache').rglob('*.wav'))

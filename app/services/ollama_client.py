@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 import threading
 import time
 from contextlib import contextmanager
@@ -20,6 +21,8 @@ class OllamaClient:
         self.embedding_model = embedding_model
         self._embedding_context = threading.local()
         self._metrics = threading.local()
+        self._query_embeddings = OrderedDict()
+        self._query_embeddings_lock = threading.Lock()
 
     def last_metrics(self, stage: str) -> dict:
         return dict(getattr(self._metrics, stage, {}))
@@ -330,6 +333,17 @@ class OllamaClient:
             single = False
             values = input
 
+        # Cache vectors only, never retrieved memories or their access state.
+        # Chroma sends query text as a singleton list. Bulk indexing bypasses it.
+        key = (self.base_url, self.embedding_model, values[0]) if len(values) == 1 and len(values[0]) <= 2048 else None
+        if key is not None:
+            with self._query_embeddings_lock:
+                cached = self._query_embeddings.get(key)
+                if cached is not None and time.monotonic() - cached[0] < 60:
+                    self._query_embeddings.move_to_end(key)
+                    self._metrics.embedding = {'wall_seconds': 0.0, 'model': self.embedding_model, 'cache_hit': True}
+                    return list(cached[1]) if single else [list(cached[1])]
+
         start = time.time()
         resp = requests.post(
             f"{self.base_url}/api/embed",
@@ -355,6 +369,12 @@ class OllamaClient:
         self._record_metrics('embedding', data, elapsed)
         if not embeddings or not isinstance(embeddings, list):
             raise RuntimeError("Ollama embed response did not contain 'embeddings'.")
+        if key is not None:
+            with self._query_embeddings_lock:
+                self._query_embeddings[key] = (time.monotonic(), tuple(embeddings[0]))
+                self._query_embeddings.move_to_end(key)
+                while len(self._query_embeddings) > 128:
+                    self._query_embeddings.popitem(last=False)
         return embeddings[0] if single else embeddings
 
 

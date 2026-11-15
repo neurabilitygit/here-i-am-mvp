@@ -286,6 +286,13 @@ def segment_cache_path(directory: Path, index: int) -> Path:
     return directory / f'{index:04d}.wav'
 
 
+def reusable_segment_dir(request: SynthesisRequest, text: str) -> Path:
+    # Raw segment audio precedes speed adjustment. Reuse only exact text with
+    # identical voice reference/model/schema; never approximate spoken words.
+    segment_request = request.model_copy(update={'text': text, 'speed': 1.0})
+    return cache_root(request) / 'segments' / ('shared-' + cache_key(segment_request))
+
+
 def atomic_write_bytes(destination: Path, payload: bytes) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f'.{destination.name}.{uuid.uuid4().hex}.tmp')
@@ -638,6 +645,9 @@ def synthesize(request: SynthesisRequest):
             read_cached_segment(segment_directory, index, sample_rate)
             for index in range(len(segments))
         ]
+        for index, text in enumerate(segments):
+            if completed_audio[index] is None:
+                completed_audio[index] = read_cached_segment(reusable_segment_dir(request, text), 0, sample_rate)
         resumed_segments = sum(value is not None for value in completed_audio)
         mark_segments_complete(request_id, resumed_segments)
         missing_indexes = sorted(
@@ -683,6 +693,7 @@ def synthesize(request: SynthesisRequest):
                 if not segment_audio.size:
                     raise HTTPException(status_code=503, detail=f'The local voice produced only silence for segment {segment_index + 1}')
                 write_cached_segment(segment_directory, segment_index, segment_audio, sample_rate)
+                write_cached_segment(reusable_segment_dir(request, segments[segment_index]), 0, segment_audio, sample_rate)
                 completed_audio[segment_index] = segment_audio
                 completed_count = sum(value is not None for value in completed_audio)
                 mark_segments_complete(request_id, completed_count)
