@@ -25,6 +25,7 @@ from native_service import verify_release
 
 PORTS={'staging':(8794,8795,8796),'production':(8787,8779,8778)}
 ENV={'PATH':'/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+     'HOME':str(Path.home()),
      'PYTHONDONTWRITEBYTECODE':'1','HF_HUB_OFFLINE':'1','TRANSFORMERS_OFFLINE':'1',
      'ANONYMIZED_TELEMETRY':'False','OTEL_SDK_DISABLED':'true'}
 

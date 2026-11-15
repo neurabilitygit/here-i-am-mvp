@@ -110,3 +110,8 @@ def test_stop_waits_for_job_and_listeners_without_reading_data(tmp_path,monkeypa
     monkeypatch.setattr(sys,'argv',['native_deployment.py','stop','--profile',str(path)])
     m.main()
     assert sum('print' in call for call in calls)==3
+def test_native_children_receive_real_home():
+    from scripts.native_deployment import ENV
+    from pathlib import Path
+    assert ENV['HOME'] == str(Path.home())
+
